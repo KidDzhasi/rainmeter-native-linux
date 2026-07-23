@@ -1,0 +1,185 @@
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+:::::				   				         							 :::::
+::::: 		         Countdown Timer for Rainmeter 	 	        		 :::::
+:::::						     		         					     :::::
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+:::::				 version 3.3  	                        			 :::::
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+_____________________________________________________
+
+Developer note:
+_____________________________________________________
+
+Hi, I hope you enjoy the skin! I've spent a lot of time on it and I hope it shows.
+
+If you like it and want to support me, then please feel free to leave a comment on my deviantArt page:
+https://www.deviantart.com/themagnumizer/art/Countdown-Timer-for-Rainmeter-534161528
+
+And if you would like to show appreciation for my hard work by donating, my paypal is magnumizer@gmail.com
+
+Have a nice day! :)
+-Magnumizer
+
+
+
+
+
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+:::::				  HELP GUIDE	                         			 :::::
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+
+
+
+1. Switch between dark and light theme
+
+	-Only applies to options UI
+
+
+2. Click sound (ON | OFF)
+
+	-Enables/disables a sound effect that is played on mouse click
+	-You may replace the file 'click.wav' with another .wav file 
+	(MUST be named 'click.wav')
+
+
+3. Final 10 seconds sound (ON | OFF)
+
+	-Sets a sound effect that triggers every second for the remaining 
+	10 seconds of the countdown
+	-Can also be switched off entirely
+	-You may replace the file '24beeps.wav' with another .wav file
+	(MUST be named '24beeps.wav')
+
+
+4. End message
+
+	-Enable/disable a message to be displayed instead of the countdown
+	when the timer reaches zero
+	-Type in the message that will be displayed
+
+
+5. Event(s) when countdown hits zero
+
+	-Select one or more events to execute when countdown reaches target
+	-Click on the disable button underneath the icon to disable it
+
+	5.1 Play sound
+		-Select a sound file to play when timer reaches zero 
+		(MUST be a .wav file)
+	5.2 Show desktop
+		-Minimizes all windows and shows desktop when timer 
+		reaches zero
+	5.3 Open file
+		-Select a file to open when timer reaches zero (any file)
+		-The file can be opened through a non-default application.
+		(check the 'Open file event uses program', see 10.)
+	5.4 Shutdown
+		-Computer shuts down when timer reaches zero
+	5.5 Open url
+		-Type in a website to open when timer reaches zero 
+		(MUST start with either 'https://' or 'www.')
+
+
+6. Adjust size
+
+	-Type a number for the countdown timer's baseline size value
+	-Click, drag or scroll the bar to change size of the countdown timer
+
+
+7. Change font
+
+	7.1 Click to select a font from the list
+	7.2 Add font
+		-Fonts MUST be placed in the '@Resources\Fonts' folder 
+		within the 'Magnumizer's Countdown Timer' skin folder!
+		-Fonts MUST have the extension .ttf (TrueType) or .otf (OpenType)
+		-Fonts MUST have the same file name as their actual Font name
+		(double click a font to see the actual name)
+		-A maximum number of 30 fonts can be contained in the list
+		-NOTE: If a new font added isn't working, try installing it
+	7.3 Remove last font
+		-Removes the last added font from the list
+		(this does NOT delete the file)
+
+
+8. Change colors 
+
+	-R=Red, G=Green, B=Blue
+	-Type in a number between 0-255 (0 = no color, 255 = max color)
+	-You may also use the mouse scroll to increment the numbers
+
+	8.1 Main
+		-Changes the main color
+	8.2 Outline
+		-Checkbox to enable/disable outline entirely
+		-Changes the color of the outline and the seperators
+	8.3 Labels
+		-Checkbox to enable/disable labels from the countdown timer
+		-Changes the color of the countdown timer's labels
+
+
+9. Show Tooltips
+
+	-Toggles tooltips that displays some helpful information
+
+
+10. Open file event program
+
+	-This function lets you choose a specific program to open a file
+	rather than using the default. 
+	For example, if the default program for opening an .mp3 file is set to WMP,
+	you can instead select a different media player like VLC.
+	Essentially it uses the filename you want to open, as a parameter for
+	the application: [Program.exe "Parameter"]
+	The programs .exe file is chosen by clicking '(choose)', while the actual
+	file you want to open is found with the 'open file' event (see 5.3)
+	-You may see this option as setting a specific program as the default
+	program	to be used for the open file event.
+	
+
+
+11. Automatically clamp time format
+
+	-This option, if enabled, clamps the countdown timer's format
+	in accordance with time remaining. For example, if there are 0 years
+	left, it will no longer display the years. If there are 0 years, 
+	0 months and 0 days remaining it will no longer display years, months 
+	and days, and so on.
+
+
+12. Display title
+	
+	-Toggles a seperate title that can be moved around independently of the timer
+	-The colors and font are set to be the same as the timer
+	
+	12.1 Adjust title size
+		-Type in a number in the field
+	12.2 Title text
+		-Here you may enter the text for the title
+
+
+13. Show/hide units of time
+
+	-Here you can choose which format to display by showing and hiding
+	units of time.
+	-The displayed format is recalculated based on choice
+	-You cannot break the link between units of time as this would require me to
+	do too many calculations based on the amount of combinations that are possible.
+	Yes, I'm lazy!
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,4 @@
+[Variables]
+IconLocation=icon.png
+PanelAction=shell:AppsFolder\microsoft.windowscommunicationsapps_8wekyb3d8bbwe!microsoft.windowslive.calendar
+PanelName=calendar
