@@ -1,0 +1,96 @@
+cmake_minimum_required(VERSION 3.16)
+
+project(rainmeter-native
+    VERSION 0.1.0
+    DESCRIPTION "Native Linux Rainmeter rendering engine"
+    LANGUAGES C CXX)
+
+# --- C++20 configuration ---
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Export compile commands for tooling (clangd, etc.)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# --- Dependencies via pkg-config ---
+find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
+
+pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
+pkg_check_modules(CAIRO REQUIRED cairo)
+pkg_check_modules(PANGO REQUIRED pango)
+pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
+pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
+pkg_check_modules(LIBZIP REQUIRED libzip)
+
+
+# --- Wayland protocol code generation (wlr-layer-shell) ---
+# The wlr-layer-shell protocol is not shipped in wayland-protocols, so it is
+# vendored in protocols/. Use wayland-scanner to generate the client glue.
+find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+
+set(LAYER_SHELL_XML
+    "${CMAKE_CURRENT_SOURCE_DIR}/protocols/wlr-layer-shell-unstable-v1.xml")
+set(PROTO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(LAYER_SHELL_HEADER
+    "${PROTO_DIR}/wlr-layer-shell-unstable-v1-client-protocol.h")
+set(LAYER_SHELL_SOURCE
+    "${PROTO_DIR}/wlr-layer-shell-unstable-v1-protocol.c")
+
+file(MAKE_DIRECTORY "${PROTO_DIR}")
+
+add_custom_command(
+    OUTPUT "${LAYER_SHELL_HEADER}"
+    COMMAND ${WAYLAND_SCANNER} client-header "${LAYER_SHELL_XML}"
+            "${LAYER_SHELL_HEADER}"
+    DEPENDS "${LAYER_SHELL_XML}"
+    VERBATIM)
+
+add_custom_command(
+    OUTPUT "${LAYER_SHELL_SOURCE}"
+    COMMAND ${WAYLAND_SCANNER} private-code "${LAYER_SHELL_XML}"
+            "${LAYER_SHELL_SOURCE}"
+    DEPENDS "${LAYER_SHELL_XML}"
+    VERBATIM)
+
+# --- Collect all sources under src/ ---
+file(GLOB_RECURSE RAINMETER_NATIVE_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+
+add_executable(rainmeter-native
+    ${RAINMETER_NATIVE_SOURCES}
+    ${LAYER_SHELL_SOURCE}
+    ${LAYER_SHELL_HEADER})
+
+# Allow includes relative to the src tree and the generated protocol headers.
+target_include_directories(rainmeter-native PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${PROTO_DIR}"
+    ${WAYLAND_CLIENT_INCLUDE_DIRS}
+    ${CAIRO_INCLUDE_DIRS}
+    ${PANGO_INCLUDE_DIRS}
+    ${PANGOCAIRO_INCLUDE_DIRS}
+    ${FONTCONFIG_INCLUDE_DIRS}
+    ${LIBZIP_INCLUDE_DIRS})
+
+
+target_compile_options(rainmeter-native PRIVATE
+    ${WAYLAND_CLIENT_CFLAGS_OTHER}
+    ${CAIRO_CFLAGS_OTHER}
+    ${PANGO_CFLAGS_OTHER}
+    ${PANGOCAIRO_CFLAGS_OTHER}
+    ${FONTCONFIG_CFLAGS_OTHER}
+    ${LIBZIP_CFLAGS_OTHER})
+
+
+target_link_libraries(rainmeter-native PRIVATE
+    ${WAYLAND_CLIENT_LIBRARIES}
+    ${CAIRO_LIBRARIES}
+    ${PANGO_LIBRARIES}
+    ${PANGOCAIRO_LIBRARIES}
+    ${FONTCONFIG_LIBRARIES}
+    ${LIBZIP_LIBRARIES}
+    Threads::Threads
+    rt)
+
