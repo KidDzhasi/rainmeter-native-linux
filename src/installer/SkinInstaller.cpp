@@ -1,9 +1,11 @@
 #include "SkinInstaller.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -15,14 +17,14 @@
 namespace fs = std::filesystem;
 
 std::string SkinInstaller::dataDirectory() {
-  // Prefer XDG_DATA_HOME, falling back to ~/.local/share.
-  const char *xdg = std::getenv("XDG_DATA_HOME");
+  // Prefer XDG_CONFIG_HOME, falling back to ~/.config.
+  const char *xdg = std::getenv("XDG_CONFIG_HOME");
   fs::path base;
   if (xdg != nullptr && xdg[0] != '\0') {
     base = fs::path(xdg);
   } else {
     const char *home = std::getenv("HOME");
-    base = fs::path(home != nullptr ? home : ".") / ".local" / "share";
+    base = fs::path(home != nullptr ? home : ".") / ".config";
   }
   return (base / "rainmeter-native").string();
 }
@@ -38,10 +40,10 @@ bool SkinInstaller::ensureDirectories(const std::string &skinsDir) const {
   return true;
 }
 
-bool SkinInstaller::install(const std::string &rmskinPath) {
+std::optional<std::string> SkinInstaller::install(const std::string &rmskinPath) {
   if (!fs::exists(rmskinPath)) {
     std::cerr << "SkinInstaller: file not found: " << rmskinPath << "\n";
-    return false;
+    return std::nullopt;
   }
 
   // Open the archive. libzip reads the ZIP central directory from the end of
@@ -54,15 +56,17 @@ bool SkinInstaller::install(const std::string &rmskinPath) {
     std::cerr << "SkinInstaller: failed to open '" << rmskinPath
               << "' as a zip archive: " << zip_error_strerror(&error) << "\n";
     zip_error_fini(&error);
-    return false;
+    return std::nullopt;
   }
 
   const std::string dataDir = dataDirectory();
   const std::string skinsDir = (fs::path(dataDir) / "Skins").string();
   if (!ensureDirectories(skinsDir)) {
     zip_close(archive);
-    return false;
+    return std::nullopt;
   }
+
+  std::string loadTarget;
 
   // --- Read RMSKIN.ini metadata from the zip stream ---
   {
@@ -86,6 +90,13 @@ bool SkinInstaller::install(const std::string &rmskinPath) {
                     << meta.getOr("rmskin", "Author", "<unknown>") << "\n";
           std::cout << "  Version : "
                     << meta.getOr("rmskin", "Version", "<unknown>") << "\n";
+          loadTarget = meta.getCaseInsensitive("rmskin", "Load").value_or("");
+          // Normalize backslashes from Windows paths
+          for (char &c : loadTarget) {
+            if (c == '\\') {
+              c = '/';
+            }
+          }
         }
       }
     } else {
@@ -96,6 +107,7 @@ bool SkinInstaller::install(const std::string &rmskinPath) {
   // --- Extract everything under Skins/ ---
   const zip_int64_t numEntries = zip_get_num_entries(archive, 0);
   int extracted = 0;
+  std::vector<std::string> extractedInis;
 
   for (zip_int64_t i = 0; i < numEntries; ++i) {
     const char *rawName = zip_get_name(archive, i, 0);
@@ -152,11 +164,48 @@ bool SkinInstaller::install(const std::string &rmskinPath) {
     out.close();
     zip_fclose(f);
     ++extracted;
+
+    std::string ext = outPath.extension().string();
+    for (char &c : ext) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    if (ext == ".ini") {
+      extractedInis.push_back(outPath.string());
+    }
   }
 
   zip_close(archive);
 
-  std::cout << "Extracted " << extracted << " file(s) into " << skinsDir
-            << "\n";
-  return true;
+  std::cout << "Extracted " << extracted << " file(s) into " << skinsDir << "\n";
+
+  std::string launchIni;
+  if (!loadTarget.empty()) {
+    fs::path loadPath = fs::path(skinsDir) / loadTarget;
+    if (fs::is_regular_file(loadPath)) {
+      std::string ext = loadPath.extension().string();
+      for (char &c : ext) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      }
+      if (ext == ".ini") {
+        launchIni = loadPath.string();
+      }
+    }
+  }
+
+  if (launchIni.empty() && !extractedInis.empty()) {
+    launchIni = extractedInis[0];
+    std::size_t minDepth = std::string::npos;
+    for (const auto &ini : extractedInis) {
+      std::size_t depth = std::count(ini.begin(), ini.end(), '/');
+      if (depth < minDepth) {
+        minDepth = depth;
+        launchIni = ini;
+      }
+    }
+  }
+
+  if (launchIni.empty()) {
+    return std::nullopt;
+  }
+  return launchIni;
 }

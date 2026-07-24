@@ -81,9 +81,10 @@ MemoryInfo readMemory() {
     } else if (key == "MemAvailable:") {
       availableKb = value;
       haveAvail = true;
-    }
-    if (haveTotal && haveAvail) {
-      break;
+    } else if (key == "SwapTotal:") {
+      m.swapTotalBytes = value * 1024ULL;
+    } else if (key == "SwapFree:") {
+      m.swapFreeBytes = value * 1024ULL;
     }
   }
 
@@ -97,6 +98,12 @@ MemoryInfo readMemory() {
       (availableKb <= totalKb) ? (totalKb - availableKb) * 1024ULL : 0ULL;
   m.usedPercent = 100.0 * static_cast<double>(totalKb - availableKb) /
                   static_cast<double>(totalKb);
+                  
+  if (m.swapTotalBytes > 0) {
+    unsigned long long usedSwap = m.swapTotalBytes - m.swapFreeBytes;
+    m.swapUsedPercent = 100.0 * static_cast<double>(usedSwap) / static_cast<double>(m.swapTotalBytes);
+  }
+  
   m.valid = true;
   return m;
 }
@@ -120,6 +127,72 @@ DiskInfo readDisk(const std::string &path) {
   }
   d.valid = true;
   return d;
+}
+
+NetStats readNetStats(const std::string &interfaceName) {
+  NetStats n;
+  std::ifstream netdev("/proc/net/dev");
+  if (!netdev.is_open()) return n;
+
+  std::string line;
+  // Skip the first two header lines
+  std::getline(netdev, line);
+  std::getline(netdev, line);
+
+  unsigned long long totalRx = 0;
+  unsigned long long totalTx = 0;
+  bool found = false;
+
+  while (std::getline(netdev, line)) {
+    std::istringstream iss(line);
+    std::string iface;
+    iss >> iface;
+    if (iface.empty()) continue;
+    
+    // Remove trailing colon
+    if (iface.back() == ':') {
+      iface.pop_back();
+    }
+    
+    if (!interfaceName.empty() && iface != interfaceName) {
+      continue;
+    }
+    
+    // If we're summing all, skip loopback
+    if (interfaceName.empty() && iface == "lo") {
+      continue;
+    }
+
+    unsigned long long rxBytes = 0, txBytes = 0, dummy = 0;
+    iss >> rxBytes;
+    // Skip 7 fields
+    for (int i = 0; i < 7; ++i) iss >> dummy;
+    iss >> txBytes;
+    
+    totalRx += rxBytes;
+    totalTx += txBytes;
+    found = true;
+    
+    if (!interfaceName.empty()) break;
+  }
+
+  if (found) {
+    n.rxBytes = totalRx;
+    n.txBytes = totalTx;
+    n.valid = true;
+  }
+  return n;
+}
+
+UptimeInfo readUptime() {
+  UptimeInfo u;
+  std::ifstream f("/proc/uptime");
+  if (!f.is_open()) return u;
+  
+  if (f >> u.uptimeSeconds) {
+    u.valid = true;
+  }
+  return u;
 }
 
 } // namespace sysmeasure

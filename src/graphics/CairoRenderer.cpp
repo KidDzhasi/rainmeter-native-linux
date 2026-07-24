@@ -5,9 +5,59 @@
 #include <vector>
 
 #include <fontconfig/fontconfig.h>
+#include <fontconfig/fcfreetype.h>
 #include <pango/pangocairo.h>
+#include <unordered_map>
+
+static std::unordered_map<std::string, std::string> s_fontFamilyMap;
+
+static std::string toLowerString(const std::string& str) {
+  std::string out = str;
+  for (char& c : out) c = std::tolower(static_cast<unsigned char>(c));
+  return out;
+}
 
 CairoRenderer::Color CairoRenderer::Color::parse(std::string_view spec) {
+  // Trim outer whitespace
+  while (!spec.empty() && (spec.front() == ' ' || spec.front() == '\t')) {
+    spec.remove_prefix(1);
+  }
+  while (!spec.empty() && (spec.back() == ' ' || spec.back() == '\t')) {
+    spec.remove_suffix(1);
+  }
+
+  if (spec.empty()) {
+    return Color{};
+  }
+
+  // Handle HEX: "RRGGBB" or "RRGGBBAA", optionally starting with "#"
+  if (spec.find(',') == std::string_view::npos) {
+    std::string_view hexStr = spec;
+    if (hexStr.front() == '#') {
+      hexStr.remove_prefix(1);
+    }
+    
+    if (hexStr.size() == 6 || hexStr.size() == 8) {
+      uint32_t val = 0;
+      auto [ptr, ec] = std::from_chars(hexStr.data(), hexStr.data() + hexStr.size(), val, 16);
+      if (ec == std::errc()) {
+        Color c;
+        if (hexStr.size() == 6) {
+          c.r = ((val >> 16) & 0xFF) / 255.0;
+          c.g = ((val >> 8) & 0xFF) / 255.0;
+          c.b = (val & 0xFF) / 255.0;
+          c.a = 1.0;
+        } else {
+          c.r = ((val >> 24) & 0xFF) / 255.0;
+          c.g = ((val >> 16) & 0xFF) / 255.0;
+          c.b = ((val >> 8) & 0xFF) / 255.0;
+          c.a = (val & 0xFF) / 255.0;
+        }
+        return c;
+      }
+    }
+  }
+
   // Split on commas into up to four integer components (0-255).
   std::vector<int> components;
   std::size_t start = 0;
@@ -131,8 +181,15 @@ CairoRenderer::drawText(const std::string &text, double x, double y,
   PangoLayout *layout = pango_cairo_create_layout(cr_);
   pango_layout_set_text(layout, text.c_str(), -1);
 
+  std::string searchFace = toLowerString(fontFace);
+  std::string resolvedFace = fontFace;
+  auto it = s_fontFamilyMap.find(searchFace);
+  if (it != s_fontFamilyMap.end()) {
+    resolvedFace = it->second;
+  }
+
   PangoFontDescription *desc = pango_font_description_new();
-  pango_font_description_set_family(desc, fontFace.c_str());
+  pango_font_description_set_family(desc, resolvedFace.c_str());
   pango_font_description_set_absolute_size(desc, fontSize * PANGO_SCALE);
   pango_layout_set_font_description(layout, desc);
   pango_font_description_free(desc);
@@ -149,15 +206,20 @@ CairoRenderer::drawText(const std::string &text, double x, double y,
   // Center/Right pull the text block left so the anchor lands at the
   // middle/right edge respectively.
   double drawX = x;
-  if (align == TextAlign::Center) {
+  double drawY = y;
+  if (align == TextAlign::Center || align == TextAlign::CenterCenter) {
     drawX = x - metrics.width / 2.0;
   } else if (align == TextAlign::Right) {
     drawX = x - metrics.width;
   }
+  
+  if (align == TextAlign::CenterCenter) {
+    drawY = y - metrics.height / 2.0;
+  }
 
   cairo_save(cr_);
   cairo_set_source_rgba(cr_, color.r, color.g, color.b, color.a);
-  cairo_move_to(cr_, drawX, y);
+  cairo_move_to(cr_, drawX, drawY);
   pango_cairo_show_layout(cr_, layout);
   cairo_restore(cr_);
 
@@ -214,31 +276,85 @@ void CairoRenderer::drawLine(double x1, double y1, double x2, double y2,
   cairo_stroke(cr_);
 }
 
-bool CairoRenderer::drawImage(const std::string &path, double x, double y,
-                              double w, double h) {
+static std::unordered_map<std::string, cairo_surface_t*> s_imageCache;
+
+CairoRenderer::ImageMetrics CairoRenderer::drawImage(const std::string &path, double x, double y,
+                              double w, double h, int preserveAspectRatio) {
   if (!valid()) {
-    return false;
+    return {};
   }
-  cairo_surface_t *image = cairo_image_surface_create_from_png(path.c_str());
-  if (cairo_surface_status(image) != CAIRO_STATUS_SUCCESS) {
-    cairo_surface_destroy(image);
-    return false;
+  
+  cairo_surface_t *image = nullptr;
+  auto it = s_imageCache.find(path);
+  if (it != s_imageCache.end()) {
+    image = it->second;
+  } else {
+    image = cairo_image_surface_create_from_png(path.c_str());
+    if (cairo_surface_status(image) != CAIRO_STATUS_SUCCESS) {
+      cairo_surface_destroy(image);
+      return {};
+    }
+    s_imageCache[path] = image;
   }
 
   const int iw = cairo_image_surface_get_width(image);
   const int ih = cairo_image_surface_get_height(image);
 
+  double finalW = (w > 0) ? w : iw;
+  double finalH = (h > 0) ? h : ih;
+
   cairo_save(cr_);
   cairo_translate(cr_, x, y);
+
   if (w > 0 && h > 0 && iw > 0 && ih > 0) {
-    cairo_scale(cr_, w / static_cast<double>(iw), h / static_cast<double>(ih));
+    if (preserveAspectRatio == 0) {
+      // 0: Stretch (default)
+      cairo_scale(cr_, w / static_cast<double>(iw), h / static_cast<double>(ih));
+    } else {
+      double scaleX = w / static_cast<double>(iw);
+      double scaleY = h / static_cast<double>(ih);
+      double scale = 1.0;
+      if (preserveAspectRatio == 1) {
+        // 1: Fit (scale to fit within W,H without cropping)
+        scale = std::min(scaleX, scaleY);
+      } else if (preserveAspectRatio == 2) {
+        // 2: Fill/Crop (scale to cover W,H, clipping the excess)
+        scale = std::max(scaleX, scaleY);
+      }
+      
+      // If we are cropping (Fill), we need to clip to W,H before scaling
+      if (preserveAspectRatio == 2) {
+        cairo_rectangle(cr_, 0, 0, w, h);
+        cairo_clip(cr_);
+      }
+      
+      // Center the image inside the bounding box
+      double drawW = iw * scale;
+      double drawH = ih * scale;
+      cairo_translate(cr_, (w - drawW) / 2.0, (h - drawH) / 2.0);
+      cairo_scale(cr_, scale, scale);
+    }
+  } else if (w > 0 && iw > 0 && h <= 0) {
+    // Scale proportionally if only width is given
+    double scale = w / static_cast<double>(iw);
+    cairo_scale(cr_, scale, scale);
+    finalH = ih * scale;
+  } else if (h > 0 && ih > 0 && w <= 0) {
+    // Scale proportionally if only height is given
+    double scale = h / static_cast<double>(ih);
+    cairo_scale(cr_, scale, scale);
+    finalW = iw * scale;
   }
+
   cairo_set_source_surface(cr_, image, 0, 0);
   cairo_paint(cr_);
   cairo_restore(cr_);
-
-  cairo_surface_destroy(image);
-  return true;
+  
+  ImageMetrics metrics;
+  metrics.success = true;
+  metrics.width = finalW;
+  metrics.height = finalH;
+  return metrics;
 }
 
 void CairoRenderer::drawBar(double x, double y, double w, double h,
@@ -325,8 +441,23 @@ void CairoRenderer::registerFontDirectory(const std::string &fontsDir) {
     }
     if (ext == ".ttf" || ext == ".otf") {
       const std::string path = entry.path().string();
-      FcConfigAppFontAddFile(config,
-                             reinterpret_cast<const FcChar8 *>(path.c_str()));
+      const FcChar8* fcPath = reinterpret_cast<const FcChar8 *>(path.c_str());
+      FcConfigAppFontAddFile(config, fcPath);
+
+      // Query the font file to extract the true typographical family name.
+      FcPattern *pat = FcFreeTypeQuery(fcPath, 0, nullptr, nullptr);
+      if (pat != nullptr) {
+        FcChar8 *family = nullptr;
+        if (FcPatternGetString(pat, FC_FAMILY, 0, &family) == FcResultMatch) {
+          std::string familyStr = reinterpret_cast<const char *>(family);
+          std::string stem = entry.path().stem().string();
+          // Map both the filename (without extension) and the family name itself
+          // (lowercased) to the exact case-sensitive family name Pango expects.
+          s_fontFamilyMap[toLowerString(stem)] = familyStr;
+          s_fontFamilyMap[toLowerString(familyStr)] = familyStr;
+        }
+        FcPatternDestroy(pat);
+      }
     }
   }
 }

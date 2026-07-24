@@ -5,6 +5,7 @@
 #include <thread>
 #include <vector>
 
+#include "evaluator/CommandProcessor.hpp"
 #include "evaluator/MathParser.hpp"
 #include "evaluator/MeasureEvaluator.hpp"
 #include "evaluator/ThemeParser.hpp"
@@ -14,6 +15,9 @@
 #include "wayland/LayerShell.hpp"
 
 #include <filesystem>
+#include <linux/input-event-codes.h>
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -22,6 +26,11 @@ constexpr int kDefaultHeight = 200;
 constexpr auto kTickInterval = std::chrono::milliseconds(1000);
 
 using Color = CairoRenderer::Color;
+
+struct MeterBounds {
+  std::string section;
+  double x, y, w, h;
+};
 
 // Resolves a meter property that may be a plain number or a formula
 // (#Variable# / [Measure] / arithmetic). Falls back to `def` if unset.
@@ -90,6 +99,9 @@ double resolveCoord(const IniLexer &skin, const MathParser &math,
 
 // Maps a StringAlign value to the renderer's alignment enum.
 CairoRenderer::TextAlign parseAlign(const std::string &spec) {
+  if (spec == "CenterCenter" || spec == "CENTERCENTER" || spec == "centercenter") {
+    return CairoRenderer::TextAlign::CenterCenter;
+  }
   if (spec == "Center" || spec == "CENTER" || spec == "center") {
     return CairoRenderer::TextAlign::Center;
   }
@@ -107,7 +119,7 @@ std::string resolveVariables(const IniLexer &skin, const std::string &text) {
   for (std::size_t i = 0; i < text.size();) {
     if (text[i] == '#') {
       const std::size_t close = text.find('#', i + 1);
-      if (close != std::string::npos) {
+      if (close != std::string::npos && close > i + 1) {
         const std::string name = text.substr(i + 1, close - i - 1);
         // Rainmeter variables are case-insensitive: #format# resolves a
         // variable defined as "Format=".
@@ -125,8 +137,44 @@ std::string resolveVariables(const IniLexer &skin, const std::string &text) {
   return out;
 }
 
+std::string resolveImagePath(const IniLexer &skin, const std::string &section,
+                             const std::string &iniPath) {
+  std::string imageName = skin.getOr(section, "ImageName", "");
+  if (imageName.empty()) {
+    return "";
+  }
+  // If absolute path
+  if (imageName.front() == '/') {
+    return imageName;
+  }
+
+  std::string imagePath = skin.getOr(section, "ImagePath", "");
+  fs::path skinDir = fs::path(iniPath).parent_path();
+
+  if (!imagePath.empty()) {
+    fs::path tryPath = skinDir / imagePath / imageName;
+    if (fs::exists(tryPath)) return tryPath.string();
+  }
+
+  fs::path tryPath1 = skinDir / imageName;
+  if (fs::exists(tryPath1)) return tryPath1.string();
+
+  // Search upwards for @Resources
+  fs::path curr = skinDir;
+  while (curr != curr.parent_path() && curr.string() != "/") {
+    fs::path resPath = curr / "@Resources" / "Images" / imageName;
+    if (fs::exists(resPath)) return resPath.string();
+    curr = curr.parent_path();
+  }
+
+  return tryPath1.string();
+}
+
 void paintScene(CairoRenderer &r, const IniLexer &skin,
-                const MeasureEvaluator &measures, const MathParser &math) {
+                const MeasureEvaluator &measures, const MathParser &math,
+                std::vector<MeterBounds> &bounds,
+                const std::string &iniPath) {
+  bounds.clear();
   // Start every frame from a fully transparent surface so the desktop shows
   // through wherever the skin does not paint.
   r.clear(Color{0.0, 0.0, 0.0, 0.0});
@@ -195,39 +243,101 @@ void paintScene(CairoRenderer &r, const IniLexer &skin,
       }
       const CairoRenderer::TextAlign align =
           parseAlign(skin.getOr(section, "StringAlign", "Left"));
+      const std::string meterFontFace = skin.getOr(section, "FontFace", fontName);
       const CairoRenderer::TextMetrics tm =
-          r.drawText(out, x, y, fontName, fontSize, color, align);
+          r.drawText(out, x, y, meterFontFace, fontSize, color, align);
       // Use the measured text extents to advance the relative-layout state.
       curWidth = tm.width;
       curHeight = tm.height;
 
     } else if (type == "Image") {
-      const std::string path = skin.getOr(section, "ImageName", "");
+      const std::string path = resolveImagePath(skin, section, iniPath);
       if (!path.empty()) {
-        r.drawImage(path, x, y, w, h);
+        int preserveAspectRatio = static_cast<int>(resolveNum(skin, math, section, "PreserveAspectRatio", 0.0));
+        auto im = r.drawImage(path, x, y, w, h, preserveAspectRatio);
+        if (im.success) {
+          curWidth = im.width;
+          curHeight = im.height;
+        }
       } else {
         // No asset: draw a placeholder rectangle so layout is visible.
-        r.strokeRect(x, y, w > 0 ? w : 32, h > 0 ? h : 32, 1.0, textColor);
+        curWidth = w > 0 ? w : 32;
+        curHeight = h > 0 ? h : 32;
+        r.strokeRect(x, y, curWidth, curHeight, 1.0, textColor);
       }
 
     } else if (type == "Shape") {
-      const std::string shape = skin.getOr(section, "Shape", "Rectangle");
-      Color fill = Color::parse(skin.getOr(section, "FillColor", "0,0,0,0"));
-      Color stroke =
-          Color::parse(skin.getOr(section, "StrokeColor", "255,255,255,255"));
-      const double lw = resolveNum(skin, math, section, "StrokeWidth", 1.0);
-      if (shape == "Ellipse") {
-        r.drawEllipse(x, y, w, h, fill, stroke, lw);
-      } else if (shape == "Line") {
-        const double x2 = resolveNum(skin, math, section, "X2", x + w);
-        const double y2 = resolveNum(skin, math, section, "Y2", y);
-        r.drawLine(x, y, x2, y2, lw, stroke);
-      } else { // Rectangle
-        if (fill.a > 0.0) {
-          r.fillRect(x, y, w, h, fill);
+      curWidth = w;
+      curHeight = h;
+      for (int i = 1; ; ++i) {
+        std::string key = (i == 1) ? "Shape" : "Shape" + std::to_string(i);
+        std::string shapeDef = skin.getOr(section, key, "");
+        if (shapeDef.empty()) break;
+        
+        // Parse the definition
+        std::vector<std::string> parts;
+        std::size_t start = 0;
+        while (start < shapeDef.size()) {
+          std::size_t end = shapeDef.find('|', start);
+          if (end == std::string::npos) end = shapeDef.size();
+          std::string part = shapeDef.substr(start, end - start);
+          while (!part.empty() && std::isspace(part.front())) part.erase(0, 1);
+          while (!part.empty() && std::isspace(part.back())) part.pop_back();
+          if (!part.empty()) parts.push_back(part);
+          start = end + 1;
         }
-        if (stroke.a > 0.0) {
-          r.strokeRect(x, y, w, h, lw, stroke);
+        
+        if (parts.empty()) continue;
+        
+        // Setup default shape styling
+        Color fill = Color::parse("0,0,0,0");
+        Color stroke = Color::parse("255,255,255,255");
+        double lw = 1.0;
+        
+        // Parse modifiers
+        for (size_t j = 1; j < parts.size(); ++j) {
+            std::string mod = parts[j];
+            if (mod.find("Fill Color ") == 0) {
+               fill = Color::parse(mod.substr(11));
+            } else if (mod.find("Stroke Color ") == 0) {
+               stroke = Color::parse(mod.substr(13));
+            } else if (mod.find("StrokeWidth ") == 0) {
+               try { lw = std::stod(mod.substr(12)); } catch(...) {}
+            }
+        }
+        
+        // Parse geometry
+        std::string geom = parts[0];
+        std::size_t space = geom.find(' ');
+        std::string shapeType = geom.substr(0, space);
+        std::string argsStr = (space != std::string::npos) ? geom.substr(space + 1) : "";
+        std::vector<double> args;
+        std::size_t pstart = 0;
+        while (pstart < argsStr.size()) {
+           std::size_t pend = argsStr.find(',', pstart);
+           if (pend == std::string::npos) pend = argsStr.size();
+           std::string arg = argsStr.substr(pstart, pend - pstart);
+           args.push_back(math.evaluateOr(arg, 0.0));
+           pstart = pend + 1;
+        }
+        
+        if (shapeType == "Rectangle" && args.size() >= 4) {
+           double sx = x + args[0];
+           double sy = y + args[1];
+           double sw = args[2];
+           double sh = args[3];
+           if (fill.a > 0) r.fillRect(sx, sy, sw, sh, fill);
+           if (stroke.a > 0 && lw > 0) r.strokeRect(sx, sy, sw, sh, lw, stroke);
+           curWidth = std::max(curWidth, args[0] + sw);
+           curHeight = std::max(curHeight, args[1] + sh);
+        } else if (shapeType == "Ellipse" && args.size() >= 4) {
+           double cx = x + args[0];
+           double cy = y + args[1];
+           double rx = args[2];
+           double ry = args[3];
+           r.drawEllipse(cx - rx, cy - ry, rx * 2, ry * 2, fill, stroke, lw);
+           curWidth = std::max(curWidth, args[0] + rx);
+           curHeight = std::max(curHeight, args[1] + ry);
         }
       }
 
@@ -240,7 +350,9 @@ void paintScene(CairoRenderer &r, const IniLexer &skin,
       if (!bcSpec.empty()) {
         bc = Color::parse(bcSpec);
       }
-      r.drawBar(x, y, w > 0 ? w : 200, h > 0 ? h : 12, pct, bc, trackColor);
+      curWidth = w > 0 ? w : 200;
+      curHeight = h > 0 ? h : 12;
+      r.drawBar(x, y, curWidth, curHeight, pct, bc, trackColor);
     }
 
     // Record this meter's final placement so subsequent meters can position
@@ -249,6 +361,8 @@ void paintScene(CairoRenderer &r, const IniLexer &skin,
     prevY = y;
     prevWidth = curWidth;
     prevHeight = curHeight;
+
+    bounds.push_back({section, x, y, curWidth, curHeight});
   }
 }
 
@@ -264,6 +378,11 @@ struct WidgetInstance {
   std::unique_ptr<MathParser> math;
   CairoRenderer renderer;
   LayerShellWindow window;
+  std::vector<MeterBounds> meterBounds;
+
+  bool forceUpdate = true; // true initially to draw first frame
+  bool forceRedraw = true;
+  bool active = true;
 };
 
 // Parses one widget .ini and brings up its surface. Returns nullptr on any
@@ -318,9 +437,40 @@ std::unique_ptr<WidgetInstance> loadWidget(const std::string &iniPath) {
     return nullptr;
   }
 
+  w->window.setMouseCallback([wPtr = w.get()](double x, double y, uint32_t button) {
+    if (button != BTN_LEFT) return;
+    for (auto it = wPtr->meterBounds.rbegin(); it != wPtr->meterBounds.rend(); ++it) {
+      if (x >= it->x && x <= it->x + it->w && y >= it->y && y <= it->y + it->h) {
+        std::string action = wPtr->skin.getCaseInsensitive(it->section, "LeftMouseUpAction").value_or("");
+        if (!action.empty()) {
+          BangResult res = CommandProcessor::execute(action, wPtr->skin, wPtr->measures);
+          if (res.needsUpdate) wPtr->forceUpdate = true;
+          if (res.needsRedraw) wPtr->forceRedraw = true;
+        }
+        break; // Only handle the topmost clicked meter
+      }
+    }
+  });
+
   std::cout << "  Widget up: " << iniPath << " (" << w->window.width() << "x"
             << w->window.height() << ")\n";
   return w;
+}
+
+
+
+// Case-insensitive check for a ".rmskin" file extension.
+bool isRmskinFile(const std::string &path) {
+  if (path.size() < 7) {
+    return false;
+  }
+  std::string ext = path.substr(path.size() - 7);
+  for (char &c : ext) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  return ext == ".rmskin";
 }
 
 } // namespace
@@ -341,7 +491,7 @@ int main(int argc, char **argv) {
       }
       const std::string rmskinPath = argv[i + 1];
       SkinInstaller installer;
-      if (!installer.install(rmskinPath)) {
+      if (!installer.install(rmskinPath).has_value()) {
         std::cerr << "Installation failed.\n";
         return 1;
       }
@@ -352,6 +502,21 @@ int main(int argc, char **argv) {
     if (!arg.empty() && arg[0] != '-') {
       inputPath = arg;
     }
+  }
+
+  // If the user passed an .rmskin file as a positional argument, auto-install
+  // it to the skins directory and then load the primary .ini from the package.
+  if (isRmskinFile(inputPath)) {
+    std::cout << "Auto-installing skin package: " << inputPath << "\n";
+    SkinInstaller installer;
+    auto installedIni = installer.install(inputPath);
+    if (!installedIni.has_value()) {
+      std::cerr << "Error: auto-install of '" << inputPath << "' failed or no .ini found.\n";
+      return 1;
+    }
+    
+    std::cout << "Launching installed skin: " << *installedIni << "\n";
+    inputPath = *installedIni;
   }
 
   // Decide whether we were handed a single widget (.ini) or a full theme
@@ -394,16 +559,39 @@ int main(int argc, char **argv) {
             << " widget(s) on the desktop. Updating every 1000ms. "
                "Ctrl+C to exit.\n";
 
-  // Live tick loop: for every widget, re-evaluate measures, redraw the full
-  // scene, and commit its frame. A widget that closes is dropped; the loop
-  // exits once no widgets remain alive.
+  auto nextTick = std::chrono::steady_clock::now() + kTickInterval;
+
+  // Live event loop: poll Wayland events continuously (approx 60fps).
+  // Evaluate measures on the tick interval, and redraw when necessary.
   while (!widgets.empty()) {
+    auto now = std::chrono::steady_clock::now();
+    bool doTick = (now >= nextTick);
+    if (doTick) {
+      nextTick = now + kTickInterval;
+    }
+
     for (auto it = widgets.begin(); it != widgets.end();) {
       WidgetInstance &w = **it;
-      w.measures.evaluate();
-      paintScene(w.renderer, w.skin, w.measures, *w.math);
-      w.renderer.flush();
-      w.window.render(w.renderer);
+      if (doTick || w.forceUpdate) {
+        w.measures.evaluate(w.skin, [&w](const std::string& bang) {
+           BangResult result = CommandProcessor::execute(bang, w.skin, w.measures);
+           if (result.needsUpdate) w.forceUpdate = true;
+           if (result.needsRedraw) w.forceRedraw = true;
+           if (result.deactivateConfig) w.active = false;
+        });
+        w.forceUpdate = false;
+        w.forceRedraw = true;
+      }
+      if (!w.active) {
+        it = widgets.erase(it);
+        continue;
+      }
+      if (w.forceRedraw) {
+        paintScene(w.renderer, w.skin, w.measures, *w.math, w.meterBounds, w.iniPath);
+        w.renderer.flush();
+        w.window.render(w.renderer);
+        w.forceRedraw = false;
+      }
 
       if (w.window.dispatchPending()) {
         ++it;
@@ -414,7 +602,7 @@ int main(int argc, char **argv) {
     if (widgets.empty()) {
       break;
     }
-    std::this_thread::sleep_for(kTickInterval);
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
   }
 
   return 0;

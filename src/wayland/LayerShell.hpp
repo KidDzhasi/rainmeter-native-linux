@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include <wayland-client.h>
@@ -43,6 +44,13 @@ public:
   // wl_shm buffer, attaches it to the surface, and commits the frame.
   void render(const CairoRenderer &renderer);
 
+  // Sets a callback to be invoked when a mouse button is released over the
+  // surface. Coordinates are relative to the top-left of the surface.
+  // button is the Wayland button code (e.g. BTN_LEFT).
+  void setMouseCallback(std::function<void(double x, double y, uint32_t button)> cb) {
+    mouseCb_ = std::move(cb);
+  }
+
   // Runs a wl_display_dispatch loop until the surface is closed.
   void run();
 
@@ -64,6 +72,12 @@ public:
                             uint32_t width, uint32_t height);
   void handleLayerClosed();
 
+  // Seat/Pointer events
+  void handleSeatCapabilities(wl_seat *seat, uint32_t caps);
+  void handlePointerEnter(double x, double y);
+  void handlePointerMotion(double x, double y);
+  void handlePointerButton(uint32_t button, uint32_t state);
+
 private:
   void disconnect();
 
@@ -72,6 +86,8 @@ private:
   wl_compositor *compositor_ = nullptr;
   wl_shm *shm_ = nullptr;
   zwlr_layer_shell_v1 *layerShell_ = nullptr;
+  wl_seat *seat_ = nullptr;
+  wl_pointer *pointer_ = nullptr;
 
   wl_surface *surface_ = nullptr;
   zwlr_layer_surface_v1 *layerSurface_ = nullptr;
@@ -79,6 +95,10 @@ private:
 
   int width_ = 0;
   int height_ = 0;
+
+  double pointerX_ = 0.0;
+  double pointerY_ = 0.0;
+  std::function<void(double, double, uint32_t)> mouseCb_;
 
   bool configured_ = false;
   bool closed_ = false;

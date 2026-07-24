@@ -27,6 +27,9 @@ struct MemoryInfo {
   unsigned long long availableBytes = 0;
   unsigned long long usedBytes = 0;
   double usedPercent = 0.0; // 0-100
+  unsigned long long swapTotalBytes = 0;
+  unsigned long long swapFreeBytes = 0;
+  double swapUsedPercent = 0.0; // 0-100
   bool valid = false;
 };
 
@@ -42,5 +45,22 @@ struct DiskInfo {
 };
 
 DiskInfo readDisk(const std::string &path);
+
+// Network usage from /proc/net/dev
+struct NetStats {
+  unsigned long long rxBytes = 0;
+  unsigned long long txBytes = 0;
+  bool valid = false;
+};
+
+NetStats readNetStats(const std::string &interfaceName = "");
+
+// System Uptime from /proc/uptime
+struct UptimeInfo {
+  double uptimeSeconds = 0.0;
+  bool valid = false;
+};
+
+UptimeInfo readUptime();
 
 } // namespace sysmeasure

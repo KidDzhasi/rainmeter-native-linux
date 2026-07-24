@@ -23,6 +23,9 @@ pkg_check_modules(PANGO REQUIRED pango)
 pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
 pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
 pkg_check_modules(LIBZIP REQUIRED libzip)
+pkg_check_modules(LIBCURL REQUIRED libcurl)
+pkg_check_modules(GIO REQUIRED gio-2.0)
+pkg_check_modules(LUA REQUIRED lua5.3)
 
 
 # --- Wayland protocol code generation (wlr-layer-shell) ---
@@ -72,7 +75,10 @@ target_include_directories(rainmeter-native PRIVATE
     ${PANGO_INCLUDE_DIRS}
     ${PANGOCAIRO_INCLUDE_DIRS}
     ${FONTCONFIG_INCLUDE_DIRS}
-    ${LIBZIP_INCLUDE_DIRS})
+    ${LIBZIP_INCLUDE_DIRS}
+    ${LIBCURL_INCLUDE_DIRS}
+    ${GIO_INCLUDE_DIRS}
+    ${LUA_INCLUDE_DIRS})
 
 
 target_compile_options(rainmeter-native PRIVATE
@@ -81,7 +87,10 @@ target_compile_options(rainmeter-native PRIVATE
     ${PANGO_CFLAGS_OTHER}
     ${PANGOCAIRO_CFLAGS_OTHER}
     ${FONTCONFIG_CFLAGS_OTHER}
-    ${LIBZIP_CFLAGS_OTHER})
+    ${LIBZIP_CFLAGS_OTHER}
+    ${LIBCURL_CFLAGS_OTHER}
+    ${GIO_CFLAGS_OTHER}
+    ${LUA_CFLAGS_OTHER})
 
 
 target_link_libraries(rainmeter-native PRIVATE
@@ -91,6 +100,9 @@ target_link_libraries(rainmeter-native PRIVATE
     ${PANGOCAIRO_LIBRARIES}
     ${FONTCONFIG_LIBRARIES}
     ${LIBZIP_LIBRARIES}
+    ${LIBCURL_LIBRARIES}
+    ${GIO_LIBRARIES}
+    ${LUA_LIBRARIES}
     Threads::Threads
     rt)
 

@@ -17,7 +17,7 @@
 class CairoRenderer {
 public:
   // Horizontal alignment for String meters (Rainmeter's StringAlign key).
-  enum class TextAlign { Left, Center, Right };
+  enum class TextAlign { Left, Center, Right, CenterCenter };
 
   // Pixel dimensions of a piece of drawn text, returned by drawText so the
   // caller can lay out subsequent relative-positioned meters.
@@ -35,8 +35,9 @@ public:
     double b = 0.0;
     double a = 1.0;
 
-    // Parses a Rainmeter "R,G,B" or "R,G,B,A" string (0-255 components).
-    // Returns black/opaque on malformed input.
+    // Parses a Rainmeter color string. Supports "R,G,B", "R,G,B,A", "RRGGBB",
+    // "RRGGBBAA", and "#RRGGBB". Components are clamped to 0.0-1.0. Returns
+    // fully transparent black if parsing fails.
     static Color parse(std::string_view spec);
   };
 
@@ -74,11 +75,17 @@ public:
   void drawLine(double x1, double y1, double x2, double y2, double lineWidth,
                 const Color &color);
 
+  struct ImageMetrics {
+    bool success = false;
+    double width = 0.0;
+    double height = 0.0;
+  };
+
   // Renders a PNG image loaded from disk at (x, y), scaled to (w, h) if both
-  // are > 0 (otherwise drawn at native size). Returns false if the PNG could
-  // not be loaded.
-  bool drawImage(const std::string &path, double x, double y, double w = 0,
-                 double h = 0);
+  // are > 0 (otherwise drawn at native size). Returns success and the final
+  // drawn dimensions.
+  ImageMetrics drawImage(const std::string &path, double x, double y, double w = 0,
+                         double h = 0, int preserveAspectRatio = 0);
 
   // Draws a horizontal progress bar. `percent` is 0-100. The filled portion
   // uses `barColor`; the remainder uses `bgColor`.

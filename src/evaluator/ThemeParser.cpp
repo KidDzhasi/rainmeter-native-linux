@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include "parser/IniLexer.hpp"
+#include "parser/EnvironmentManager.hpp"
 
 namespace {
 
@@ -68,9 +69,15 @@ bool ThemeParser::isThemeFile(const std::string &path) {
 }
 
 std::string ThemeParser::defaultSkinsRoot() {
-  const char *home = std::getenv("HOME");
-  std::string base = (home != nullptr && home[0] != '\0') ? home : ".";
-  return base + "/.local/share/rainmeter-native/Skins";
+  // Delegate to the centralised EnvironmentManager so all components agree
+  // on the canonical skins root (~/.config/rainmeter-native/Skins/).
+  std::string root = EnvironmentManager::skinsRoot();
+  // Strip the trailing '/' that EnvironmentManager guarantees, since callers
+  // of defaultSkinsRoot() may append their own separators.
+  if (!root.empty() && root.back() == '/') {
+    root.pop_back();
+  }
+  return root;
 }
 
 std::string

@@ -1,5 +1,6 @@
 #include "IniLexer.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +11,19 @@ namespace fs = std::filesystem;
 namespace {
 // ASCII whitespace characters trimmed from lines, keys, and values.
 constexpr std::string_view kWhitespace = " \t\r\n\f\v";
+
+// Strips all carriage-return characters from an owned string so that
+// Windows CRLF leftovers never corrupt stored keys, section names, or values.
+inline void stripCR(std::string &s) {
+  s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
+}
+
+// Converts Windows backslash path separators to forward slashes so that paths
+// read from Rainmeter skins (authored on Windows) work on Linux, where
+// std::filesystem::path treats '\\' as a literal character.
+inline void normalizePathSeparators(std::string &s) {
+  std::replace(s.begin(), s.end(), '\\', '/');
+}
 
 // Maximum @include recursion depth (guards against include cycles).
 constexpr int kMaxIncludeDepth = 16;
@@ -190,6 +204,35 @@ std::string IniLexer::expandMacros(std::string_view value) const {
   return out;
 }
 
+std::string IniLexer::expandBuiltins(std::string_view value) const {
+  // Scan for #NAME# tokens and resolve them against the EnvironmentManager.
+  // This runs BEFORE expandMacros (which handles the special #@# syntax) and
+  // before user [Variables] resolution.  Only recognised built-in names are
+  // replaced; everything else passes through untouched.
+  std::string out;
+  out.reserve(value.size());
+  for (std::size_t i = 0; i < value.size();) {
+    if (value[i] == '#') {
+      const std::size_t close = value.find('#', i + 1);
+      if (close != std::string_view::npos && close > i + 1) {
+        const std::string name(value.substr(i + 1, close - i - 1));
+        // Skip the special #@# macro — that is handled by expandMacros.
+        if (name != "@") {
+          auto resolved = builtins_.resolve(name);
+          if (resolved) {
+            out += *resolved;
+            i = close + 1;
+            continue;
+          }
+        }
+      }
+    }
+    out += value[i];
+    ++i;
+  }
+  return out;
+}
+
 bool IniLexer::parseFile(const std::string &filePath) {
   data_.clear();
 
@@ -198,6 +241,7 @@ bool IniLexer::parseFile(const std::string &filePath) {
     return false;
   }
 
+  builtins_ = EnvironmentManager(filePath);
   resourcesPath_ = computeResourcesPath(filePath);
   const std::string baseDir = fs::path(filePath).parent_path().string();
   return parseContent(content, baseDir, 0);
@@ -217,12 +261,20 @@ bool IniLexer::parseContent(std::string_view content,
   const std::size_t size = content.size();
 
   while (pos < size) {
-    // Extract the next line (up to '\n'); handle trailing '\r' via trim.
+    // Extract the next line (up to '\n').
     std::size_t eol = content.find('\n', pos);
     std::string_view rawLine = (eol == std::string_view::npos)
                                    ? content.substr(pos)
                                    : content.substr(pos, eol - pos);
     pos = (eol == std::string_view::npos) ? size : eol + 1;
+
+    // Strip a trailing '\r' left over from Windows CRLF line endings before
+    // the general whitespace trim; this is safer than relying on trim()
+    // alone because it guarantees \r can never survive inside a section
+    // name, key, or value.
+    if (!rawLine.empty() && rawLine.back() == '\r') {
+      rawLine.remove_suffix(1);
+    }
 
     std::string_view line = trim(rawLine);
 
@@ -237,6 +289,7 @@ bool IniLexer::parseContent(std::string_view content,
       if (close != std::string_view::npos) {
         std::string_view name = trim(line.substr(1, close - 1));
         currentSection.assign(name);
+        stripCR(currentSection);
         data_.try_emplace(currentSection);
       }
       continue;
@@ -248,22 +301,33 @@ bool IniLexer::parseContent(std::string_view content,
       continue;
     }
 
-    std::string_view key = trim(line.substr(0, eq));
+    std::string_view keyView = trim(line.substr(0, eq));
     std::string_view rawValue = trim(line.substr(eq + 1));
-    if (key.empty()) {
+    if (keyView.empty()) {
       continue;
     }
 
-    // Expand the #@# macro into the value.
-    const std::string value = expandMacros(rawValue);
+    // Build owned key and value strings, scrubbing any stray \r and
+    // normalising Windows backslash path separators to '/'.
+    std::string key(keyView);
+    stripCR(key);
+
+    // Expansion pipeline: built-in env vars first (#SKINSPATH# etc.),
+    // then the #@# macro, then sanitise.
+    std::string value = expandBuiltins(rawValue);
+    value = expandMacros(value);
+    stripCR(value);
+    normalizePathSeparators(value);
 
     // Recursive @include (e.g. @include, @include2 = #@#Settings.inc).
     if (startsWithIgnoreCase(key, "@include")) {
       if (depth >= kMaxIncludeDepth || value.empty()) {
         continue;
       }
-      // Resolve the include target: absolute paths as-is, otherwise
-      // relative to the current file's directory.
+      // Resolve the include target: normalise any remaining Windows
+      // backslashes, then treat absolute paths as-is and resolve relative
+      // ones against the current file's directory.
+      normalizePathSeparators(value);
       fs::path target(value);
       if (!target.is_absolute()) {
         target = fs::path(baseDir) / target;
@@ -277,7 +341,7 @@ bool IniLexer::parseContent(std::string_view content,
       continue;
     }
 
-    data_[currentSection].insert_or_assign(std::string(key), value);
+    data_[currentSection].insert_or_assign(std::move(key), std::move(value));
   }
 
   return true;
@@ -328,11 +392,39 @@ IniLexer::getCaseInsensitive(std::string_view section,
 
 std::string IniLexer::getOr(std::string_view section, std::string_view key,
                             std::string_view fallback) const {
+  auto val = get(section, key);
+  return val ? *val : std::string(fallback);
+}
 
-  if (auto value = get(section, key)) {
-    return *value;
+void IniLexer::setVariable(const std::string &name, const std::string &value) {
+  // Rainmeter variable names are case-insensitive but typically stored as they
+  // appear. To ensure we overwrite or match existing case-insensitively, we
+  // could search for an existing variant, or just store it. Since
+  // `getCaseInsensitive` is used for [Variables] lookup, we can just insert it.
+  // We should try to overwrite an existing case-variant if it exists.
+  std::string lowerName = name;
+  for (char &c : lowerName) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
   }
-  return std::string(fallback);
+
+  auto secIt = data_.find("Variables");
+  if (secIt == data_.end()) {
+    data_["Variables"][name] = value;
+    return;
+  }
+
+  // Look for existing key with same lowercase.
+  for (auto &kv : secIt->second) {
+    std::string existingLower = kv.first;
+    for (char &c : existingLower) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    if (existingLower == lowerName) {
+      secIt->second.erase(kv.first);
+      break;
+    }
+  }
+  secIt->second[name] = value;
 }
 
 bool IniLexer::hasSection(std::string_view section) const {

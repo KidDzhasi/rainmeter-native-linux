@@ -5,6 +5,8 @@
 #include <string_view>
 #include <unordered_map>
 
+#include "EnvironmentManager.hpp"
+
 // IniLexer parses Rainmeter .ini skin files.
 //
 // It reads a file from disk, splits it into [Sections] containing
@@ -41,6 +43,10 @@ public:
   std::optional<std::string> get(std::string_view section,
                                  std::string_view key) const;
 
+  // Sets or updates a variable in the [Variables] section. Used dynamically
+  // by !SetVariable bangs.
+  void setVariable(const std::string &name, const std::string &value);
+
   // Like get(), but matches both the section and key case-insensitively.
   // Rainmeter treats section names, keys, and #Variables# as case-insensitive
   // (so #format# resolves a variable defined as "Format="). Returns the value
@@ -58,6 +64,8 @@ public:
   // Access to the complete parsed data structure.
   const DataMap &data() const noexcept { return data_; }
 
+  const EnvironmentManager &environment() const noexcept { return builtins_; }
+
   // Number of parsed sections.
   std::size_t sectionCount() const noexcept { return data_.size(); }
 
@@ -69,6 +77,13 @@ public:
   // BOM is present. Returns false if the file cannot be opened.
   static bool readFileUtf8(const std::string &filePath, std::string &out);
 
+  // Replaces every #@# occurrence in `value` with resourcesPath_.
+  std::string expandMacros(std::string_view value) const;
+
+  // Expands built-in #VARNAME# tokens (e.g. #SKINSPATH#, #CURRENTFILE#)
+  // from the EnvironmentManager before standard variable resolution.
+  std::string expandBuiltins(std::string_view value) const;
+
 private:
   // Trims leading/trailing ASCII whitespace from a view.
   static std::string_view trim(std::string_view sv);
@@ -79,9 +94,6 @@ private:
   // Determines the @Resources/ directory for a skin file path.
   static std::string computeResourcesPath(const std::string &skinFilePath);
 
-  // Replaces every #@# occurrence in `value` with resourcesPath_.
-  std::string expandMacros(std::string_view value) const;
-
   // Parses content from a file already loaded into UTF-8, merging into data_.
   // `baseDir` is the directory of the current file, used to resolve relative
   // @include targets. `depth` guards against include cycles.
@@ -90,4 +102,5 @@ private:
 
   DataMap data_;
   std::string resourcesPath_;
+  EnvironmentManager builtins_;
 };
