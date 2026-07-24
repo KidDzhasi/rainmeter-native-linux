@@ -18,9 +18,9 @@ find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 
 pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
-pkg_check_modules(CAIRO REQUIRED cairo)
-pkg_check_modules(PANGO REQUIRED pango)
-pkg_check_modules(PANGOCAIRO REQUIRED pangocairo)
+pkg_check_modules(WAYLAND_EGL REQUIRED wayland-egl)
+pkg_check_modules(EGL REQUIRED egl)
+pkg_check_modules(EPOXY REQUIRED epoxy)
 pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
 pkg_check_modules(LIBZIP REQUIRED libzip)
 pkg_check_modules(LIBCURL REQUIRED libcurl)
@@ -57,12 +57,30 @@ add_custom_command(
     DEPENDS "${LAYER_SHELL_XML}"
     VERBATIM)
 
+# --- NanoVG ---
+include(FetchContent)
+FetchContent_Declare(
+    nanovg
+    GIT_REPOSITORY https://github.com/memononen/nanovg.git
+    GIT_TAG        master
+)
+FetchContent_Populate(nanovg)
+
+# --- GLM ---
+FetchContent_Declare(
+    glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG        master
+)
+FetchContent_Populate(glm)
+
 # --- Collect all sources under src/ ---
 file(GLOB_RECURSE RAINMETER_NATIVE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
 add_executable(rainmeter-native
     ${RAINMETER_NATIVE_SOURCES}
+    ${nanovg_SOURCE_DIR}/src/nanovg.c
     ${LAYER_SHELL_SOURCE}
     ${LAYER_SHELL_HEADER})
 
@@ -70,10 +88,12 @@ add_executable(rainmeter-native
 target_include_directories(rainmeter-native PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${PROTO_DIR}"
+    "${nanovg_SOURCE_DIR}/src"
+    "${glm_SOURCE_DIR}"
     ${WAYLAND_CLIENT_INCLUDE_DIRS}
-    ${CAIRO_INCLUDE_DIRS}
-    ${PANGO_INCLUDE_DIRS}
-    ${PANGOCAIRO_INCLUDE_DIRS}
+    ${WAYLAND_EGL_INCLUDE_DIRS}
+    ${EGL_INCLUDE_DIRS}
+    ${EPOXY_INCLUDE_DIRS}
     ${FONTCONFIG_INCLUDE_DIRS}
     ${LIBZIP_INCLUDE_DIRS}
     ${LIBCURL_INCLUDE_DIRS}
@@ -83,9 +103,9 @@ target_include_directories(rainmeter-native PRIVATE
 
 target_compile_options(rainmeter-native PRIVATE
     ${WAYLAND_CLIENT_CFLAGS_OTHER}
-    ${CAIRO_CFLAGS_OTHER}
-    ${PANGO_CFLAGS_OTHER}
-    ${PANGOCAIRO_CFLAGS_OTHER}
+    ${WAYLAND_EGL_CFLAGS_OTHER}
+    ${EGL_CFLAGS_OTHER}
+    ${EPOXY_CFLAGS_OTHER}
     ${FONTCONFIG_CFLAGS_OTHER}
     ${LIBZIP_CFLAGS_OTHER}
     ${LIBCURL_CFLAGS_OTHER}
@@ -95,10 +115,11 @@ target_compile_options(rainmeter-native PRIVATE
 
 target_link_libraries(rainmeter-native PRIVATE
     ${WAYLAND_CLIENT_LIBRARIES}
-    ${CAIRO_LIBRARIES}
-    ${PANGO_LIBRARIES}
-    ${PANGOCAIRO_LIBRARIES}
+    ${WAYLAND_EGL_LIBRARIES}
+    ${EGL_LIBRARIES}
+    ${EPOXY_LIBRARIES}
     ${FONTCONFIG_LIBRARIES}
+    m
     ${LIBZIP_LIBRARIES}
     ${LIBCURL_LIBRARIES}
     ${GIO_LIBRARIES}

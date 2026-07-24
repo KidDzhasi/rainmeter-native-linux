@@ -6,12 +6,10 @@
 #include <string>
 
 #include <wayland-client.h>
+#include <wayland-egl.h>
+#include <epoxy/egl.h>
 
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
-
-class CairoRenderer;
-
-// LayerShellWindow presents a Cairo-rendered surface directly onto the
 // desktop using the wlr-layer-shell protocol.
 //
 // Responsibilities:
@@ -40,9 +38,14 @@ public:
   bool initLayerSurface(int width, int height,
                         const std::string &scope = "rainmeter-native");
 
-  // Copies the CairoRenderer's ARGB32 pixels into a freshly-allocated
-  // wl_shm buffer, attaches it to the surface, and commits the frame.
-  void render(const CairoRenderer &renderer);
+  // Dynamically resizes the surface.
+  void resize(int width, int height);
+
+  // Makes the EGL context current on the calling thread.
+  bool makeCurrent();
+
+  // Swaps EGL buffers to present the frame.
+  void swapBuffers();
 
   // Sets a callback to be invoked when a mouse button is released over the
   // surface. Coordinates are relative to the top-left of the surface.
@@ -80,18 +83,22 @@ public:
 
 private:
   void disconnect();
+  bool initEGL();
 
   wl_display *display_ = nullptr;
   wl_registry *registry_ = nullptr;
   wl_compositor *compositor_ = nullptr;
-  wl_shm *shm_ = nullptr;
   zwlr_layer_shell_v1 *layerShell_ = nullptr;
   wl_seat *seat_ = nullptr;
   wl_pointer *pointer_ = nullptr;
 
   wl_surface *surface_ = nullptr;
   zwlr_layer_surface_v1 *layerSurface_ = nullptr;
-  wl_buffer *buffer_ = nullptr; // persistent frame buffer
+  
+  wl_egl_window *eglWindow_ = nullptr;
+  EGLDisplay eglDisplay_ = EGL_NO_DISPLAY;
+  EGLContext eglContext_ = EGL_NO_CONTEXT;
+  EGLSurface eglSurface_ = EGL_NO_SURFACE;
 
   int width_ = 0;
   int height_ = 0;

@@ -4,30 +4,7 @@
 #include <ctime>
 #include <iostream>
 
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <unistd.h>
-
-#include "graphics/CairoRenderer.hpp"
-
 namespace {
-
-// Creates an anonymous, unlinked file suitable for wl_shm, sized to `size`.
-// Returns a file descriptor, or -1 on failure.
-int createAnonymousFile(std::size_t size) {
-  int fd = memfd_create("rainmeter-native-shm", MFD_CLOEXEC | MFD_ALLOW_SEALING);
-  if (fd < 0) {
-    std::cerr << "LayerShellWindow: memfd_create failed\n";
-    return -1;
-  }
-
-  if (ftruncate(fd, static_cast<off_t>(size)) < 0) {
-    std::cerr << "LayerShellWindow: ftruncate failed\n";
-    close(fd);
-    return -1;
-  }
-  return fd;
-}
 
 // --- Registry listener trampolines ---
 void registryGlobal(void *data, wl_registry *registry, uint32_t name,
@@ -116,28 +93,21 @@ LayerShellWindow::~LayerShellWindow() { disconnect(); }
 bool LayerShellWindow::connect() {
   display_ = wl_display_connect(nullptr);
   if (display_ == nullptr) {
-    std::cerr << "LayerShellWindow: failed to connect to a Wayland display "
-                 "(is WAYLAND_DISPLAY set?)\n";
+    std::cerr << "LayerShellWindow: failed to connect to a Wayland display\n";
     return false;
   }
 
   registry_ = wl_display_get_registry(display_);
   wl_registry_add_listener(registry_, &kRegistryListener, this);
 
-  // Roundtrip so the registry reports its globals and we bind them.
   wl_display_roundtrip(display_);
 
   if (compositor_ == nullptr) {
     std::cerr << "LayerShellWindow: wl_compositor global not found\n";
     return false;
   }
-  if (shm_ == nullptr) {
-    std::cerr << "LayerShellWindow: wl_shm global not found\n";
-    return false;
-  }
   if (layerShell_ == nullptr) {
-    std::cerr << "LayerShellWindow: compositor does not support "
-                 "wlr-layer-shell\n";
+    std::cerr << "LayerShellWindow: compositor does not support wlr-layer-shell\n";
     return false;
   }
   return true;
@@ -148,9 +118,6 @@ void LayerShellWindow::handleGlobal(wl_registry *registry, uint32_t name,
   if (std::strcmp(interface, wl_compositor_interface.name) == 0) {
     compositor_ = static_cast<wl_compositor *>(wl_registry_bind(
         registry, name, &wl_compositor_interface, version < 4 ? version : 4));
-  } else if (std::strcmp(interface, wl_shm_interface.name) == 0) {
-    shm_ = static_cast<wl_shm *>(
-        wl_registry_bind(registry, name, &wl_shm_interface, 1));
   } else if (std::strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
     layerShell_ = static_cast<zwlr_layer_shell_v1 *>(
         wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface,
@@ -162,8 +129,7 @@ void LayerShellWindow::handleGlobal(wl_registry *registry, uint32_t name,
   }
 }
 
-bool LayerShellWindow::initLayerSurface(int width, int height,
-                                        const std::string &scope) {
+bool LayerShellWindow::initLayerSurface(int width, int height, const std::string &scope) {
   if (compositor_ == nullptr || layerShell_ == nullptr) {
     return false;
   }
@@ -172,9 +138,6 @@ bool LayerShellWindow::initLayerSurface(int width, int height,
 
   surface_ = wl_compositor_create_surface(compositor_);
 
-  // BOTTOM layer: sits above the desktop wallpaper but below normal windows.
-  // Anchored to the top-right corner with a 50px margin so it doesn't
-  // overlap desktop icons (which are typically on the left).
   layerSurface_ = zwlr_layer_shell_v1_get_layer_surface(
       layerShell_, surface_, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM,
       scope.c_str());
@@ -190,25 +153,97 @@ bool LayerShellWindow::initLayerSurface(int width, int height,
   zwlr_layer_surface_v1_set_anchor(layerSurface_,
                                    ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
                                        ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-  // 50px top, 50px right, 0 bottom, 0 left.
   zwlr_layer_surface_v1_set_margin(layerSurface_, 50, 50, 0, 0);
 
-  // Initial commit without a buffer; compositor replies with configure.
+  // Initialize EGL and create wl_egl_window before first commit
+  if (!initEGL()) {
+    std::cerr << "LayerShellWindow: failed to initialize EGL\n";
+    return false;
+  }
+
   wl_surface_commit(surface_);
   wl_display_roundtrip(display_);
 
   return configured_;
 }
 
+bool LayerShellWindow::initEGL() {
+  eglDisplay_ = eglGetDisplay((EGLNativeDisplayType)display_);
+  if (eglDisplay_ == EGL_NO_DISPLAY) return false;
+
+  EGLint major, minor;
+  if (!eglInitialize(eglDisplay_, &major, &minor)) return false;
+
+  if (!eglBindAPI(EGL_OPENGL_API)) return false;
+
+  EGLint configAttribs[] = {
+      EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+      EGL_RED_SIZE, 8,
+      EGL_GREEN_SIZE, 8,
+      EGL_BLUE_SIZE, 8,
+      EGL_ALPHA_SIZE, 8,
+      EGL_STENCIL_SIZE, 8,
+      EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+      EGL_NONE
+  };
+
+  EGLConfig config;
+  EGLint numConfigs;
+  if (!eglChooseConfig(eglDisplay_, configAttribs, &config, 1, &numConfigs) || numConfigs == 0) {
+      return false;
+  }
+
+  EGLint contextAttribs[] = {
+      EGL_CONTEXT_MAJOR_VERSION, 3,
+      EGL_CONTEXT_MINOR_VERSION, 2,
+      EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+      EGL_NONE
+  };
+
+  eglContext_ = eglCreateContext(eglDisplay_, config, EGL_NO_CONTEXT, contextAttribs);
+  if (eglContext_ == EGL_NO_CONTEXT) return false;
+
+  eglWindow_ = wl_egl_window_create(surface_, width_, height_);
+  if (!eglWindow_) return false;
+
+  eglSurface_ = eglCreateWindowSurface(eglDisplay_, config, (EGLNativeWindowType)eglWindow_, nullptr);
+  if (eglSurface_ == EGL_NO_SURFACE) return false;
+
+  return true;
+}
+
+void LayerShellWindow::resize(int width, int height) {
+    if (width == width_ && height == height_) return;
+    
+    if (layerSurface_) {
+        zwlr_layer_surface_v1_set_size(layerSurface_, width, height);
+        wl_surface_commit(surface_);
+    }
+}
+
+bool LayerShellWindow::makeCurrent() {
+    if (eglDisplay_ == EGL_NO_DISPLAY || eglSurface_ == EGL_NO_SURFACE || eglContext_ == EGL_NO_CONTEXT) {
+        return false;
+    }
+    return eglMakeCurrent(eglDisplay_, eglSurface_, eglSurface_, eglContext_) == EGL_TRUE;
+}
+
+void LayerShellWindow::swapBuffers() {
+    if (eglDisplay_ != EGL_NO_DISPLAY && eglSurface_ != EGL_NO_SURFACE) {
+        eglSwapBuffers(eglDisplay_, eglSurface_);
+    }
+}
+
 void LayerShellWindow::handleLayerConfigure(zwlr_layer_surface_v1 *surface,
                                             uint32_t serial, uint32_t width,
                                             uint32_t height) {
-  if (width > 0) {
-    width_ = static_cast<int>(width);
+  if (width > 0) width_ = static_cast<int>(width);
+  if (height > 0) height_ = static_cast<int>(height);
+  
+  if (eglWindow_) {
+      wl_egl_window_resize(eglWindow_, width_, height_, 0, 0);
   }
-  if (height > 0) {
-    height_ = static_cast<int>(height);
-  }
+
   zwlr_layer_surface_v1_ack_configure(surface, serial);
   configured_ = true;
 }
@@ -236,98 +271,32 @@ void LayerShellWindow::handlePointerMotion(double x, double y) {
 }
 
 void LayerShellWindow::handlePointerButton(uint32_t button, uint32_t state) {
-  // state 1 = pressed, 0 = released
   if (state == 0 && mouseCb_) {
     mouseCb_(pointerX_, pointerY_, button);
   }
 }
 
-void LayerShellWindow::render(const CairoRenderer &renderer) {
-  if (!configured_ || surface_ == nullptr || shm_ == nullptr) {
-    return;
-  }
-
-  const unsigned char *src = renderer.pixels();
-  if (src == nullptr) {
-    std::cerr << "LayerShellWindow: renderer has no pixel data\n";
-    return;
-  }
-  
-  if (width_ <= 0 || height_ <= 0) {
-    return;
-  }
-  const int srcStride = renderer.stride();
-  const int dstStride = width_ * 4;
-  const std::size_t size = static_cast<std::size_t>(dstStride) * height_;
-
-  // Allocate a shared-memory buffer for this frame.
-  int fd = createAnonymousFile(size);
-  if (fd < 0) {
-    std::cerr << "LayerShellWindow: failed to create shm file\n";
-    return;
-  }
-
-  void *dst = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (dst == MAP_FAILED) {
-    std::cerr << "LayerShellWindow: mmap failed\n";
-    close(fd);
-    return;
-  }
-
-  // Copy the Cairo image data into the shm buffer, row by row (the source
-  // and destination strides may differ).
-  auto *dstBytes = static_cast<unsigned char *>(dst);
-  const int copyBytes = (srcStride < dstStride) ? srcStride : dstStride;
-  for (int y = 0; y < height_; ++y) {
-    std::memcpy(dstBytes + static_cast<std::size_t>(y) * dstStride,
-                src + static_cast<std::size_t>(y) * srcStride, copyBytes);
-  }
-
-  wl_shm_pool *pool = wl_shm_create_pool(shm_, fd, static_cast<int32_t>(size));
-
-  // Replace any previous frame buffer with the new one. For a static
-  // desktop background we keep a single persistent buffer alive rather than
-  // recycling it via the release event.
-  if (buffer_ != nullptr) {
-    wl_buffer_destroy(buffer_);
-  }
-  buffer_ = wl_shm_pool_create_buffer(pool, 0, width_, height_, dstStride,
-                                      WL_SHM_FORMAT_ARGB8888);
-  wl_shm_pool_destroy(pool);
-
-  // The buffer keeps the mapping alive on the compositor side; we can
-  // unmap and close our fd now that the pool holds a reference.
-  munmap(dst, size);
-  close(fd);
-
-  wl_surface_attach(surface_, buffer_, 0, 0);
-  wl_surface_damage_buffer(surface_, 0, 0, width_, height_);
-  wl_surface_commit(surface_);
-  wl_display_flush(display_);
-}
-
 void LayerShellWindow::run() {
-  while (!closed_ && wl_display_dispatch(display_) != -1) {
-    // Event loop; the compositor drives redraws and input via events.
-  }
+  while (!closed_ && wl_display_dispatch(display_) != -1) {}
 }
 
 bool LayerShellWindow::dispatchPending() {
-  if (display_ == nullptr || closed_) {
-    return false;
-  }
-  // Drain queued events without blocking, then flush our outgoing requests.
-  if (wl_display_dispatch_pending(display_) == -1) {
-    return false;
-  }
+  if (display_ == nullptr || closed_) return false;
+  if (wl_display_dispatch_pending(display_) == -1) return false;
   wl_display_flush(display_);
   return !closed_;
 }
 
 void LayerShellWindow::disconnect() {
-  if (buffer_ != nullptr) {
-    wl_buffer_destroy(buffer_);
-    buffer_ = nullptr;
+  if (eglDisplay_ != EGL_NO_DISPLAY) {
+      eglMakeCurrent(eglDisplay_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+      if (eglSurface_ != EGL_NO_SURFACE) eglDestroySurface(eglDisplay_, eglSurface_);
+      if (eglContext_ != EGL_NO_CONTEXT) eglDestroyContext(eglDisplay_, eglContext_);
+      eglTerminate(eglDisplay_);
+  }
+  if (eglWindow_ != nullptr) {
+      wl_egl_window_destroy(eglWindow_);
+      eglWindow_ = nullptr;
   }
   if (layerSurface_ != nullptr) {
     zwlr_layer_surface_v1_destroy(layerSurface_);
@@ -348,10 +317,6 @@ void LayerShellWindow::disconnect() {
   if (layerShell_ != nullptr) {
     zwlr_layer_shell_v1_destroy(layerShell_);
     layerShell_ = nullptr;
-  }
-  if (shm_ != nullptr) {
-    wl_shm_destroy(shm_);
-    shm_ = nullptr;
   }
   if (compositor_ != nullptr) {
     wl_compositor_destroy(compositor_);
