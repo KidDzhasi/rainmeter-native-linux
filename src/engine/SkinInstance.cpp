@@ -480,10 +480,29 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath) {
         }
       });
 
-  int windowX = static_cast<int>(inst->math_->evaluateOr(inst->skin_.getOr("Rainmeter", "WindowX", "0"), 0));
-  int windowY = static_cast<int>(inst->math_->evaluateOr(inst->skin_.getOr("Rainmeter", "WindowY", "0"), 0));
+  inst->windowX_ = static_cast<int>(inst->math_->evaluateOr(inst->skin_.getOr("Rainmeter", "WindowX", "0"), 0));
+  inst->windowY_ = static_cast<int>(inst->math_->evaluateOr(inst->skin_.getOr("Rainmeter", "WindowY", "0"), 0));
 
-  if (!inst->window_.initLayerSurface(kDefaultWidth, kDefaultHeight, windowX, windowY, iniPath)) {
+  std::string anchorX = getKeyCI(inst->skin_, "Rainmeter", "AnchorX");
+  if (anchorX.empty()) anchorX = "left";
+  for (auto &c : anchorX) c = std::tolower(c);
+  
+  std::string anchorY = getKeyCI(inst->skin_, "Rainmeter", "AnchorY");
+  if (anchorY.empty()) anchorY = "top";
+  for (auto &c : anchorY) c = std::tolower(c);
+
+  uint32_t anchor = 0;
+  if (anchorX == "left") anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+  else if (anchorX == "right") anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+  
+  if (anchorY == "top") anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
+  else if (anchorY == "bottom") anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
+
+  std::string monitorStr = getKeyCI(inst->skin_, "Rainmeter", "@Monitor");
+  if (monitorStr.empty()) monitorStr = "0";
+  int monitorIndex = static_cast<int>(inst->math_->evaluateOr(monitorStr, 0));
+
+  if (!inst->window_.initLayerSurface(kDefaultWidth, kDefaultHeight, inst->windowX_, inst->windowY_, monitorIndex, anchor, iniPath)) {
     std::cerr << "SkinInstance '" << iniPath
               << "': failed to initialize layer surface.\n";
     return nullptr;

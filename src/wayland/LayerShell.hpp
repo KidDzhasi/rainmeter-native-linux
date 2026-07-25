@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include <wayland-client.h>
 #include <wayland-egl.h>
@@ -37,6 +38,7 @@ public:
   // top-left of the output, and performs the configure handshake.
   bool initLayerSurface(int width, int height,
                         int windowX = 0, int windowY = 0,
+                        int monitorIndex = 0, uint32_t anchor = 0,
                         const std::string &scope = "rainmeter-native");
 
   // Dynamically resizes the surface.
@@ -92,6 +94,7 @@ private:
   zwlr_layer_shell_v1 *layerShell_ = nullptr;
   wl_seat *seat_ = nullptr;
   wl_pointer *pointer_ = nullptr;
+  std::vector<wl_output *> outputs_;
 
   wl_surface *surface_ = nullptr;
   zwlr_layer_surface_v1 *layerSurface_ = nullptr;

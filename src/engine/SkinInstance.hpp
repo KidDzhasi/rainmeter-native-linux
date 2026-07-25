@@ -106,4 +106,6 @@ private:
   bool active_ = true;
   int targetWidth_ = -1;
   int targetHeight_ = -1;
+  int windowX_ = 0;
+  int windowY_ = 0;
 };

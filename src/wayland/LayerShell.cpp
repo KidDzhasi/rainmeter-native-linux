@@ -126,10 +126,14 @@ void LayerShellWindow::handleGlobal(wl_registry *registry, uint32_t name,
     seat_ = static_cast<wl_seat *>(
         wl_registry_bind(registry, name, &wl_seat_interface, version < 5 ? version : 5));
     wl_seat_add_listener(seat_, &kSeatListener, this);
+  } else if (std::strcmp(interface, wl_output_interface.name) == 0) {
+    wl_output *output = static_cast<wl_output *>(
+        wl_registry_bind(registry, name, &wl_output_interface, version < 3 ? version : 3));
+    outputs_.push_back(output);
   }
 }
 
-bool LayerShellWindow::initLayerSurface(int width, int height, int windowX, int windowY, const std::string &scope) {
+bool LayerShellWindow::initLayerSurface(int width, int height, int windowX, int windowY, int monitorIndex, uint32_t anchor, const std::string &scope) {
   if (compositor_ == nullptr || layerShell_ == nullptr) {
     return false;
   }
@@ -138,8 +142,13 @@ bool LayerShellWindow::initLayerSurface(int width, int height, int windowX, int 
 
   surface_ = wl_compositor_create_surface(compositor_);
 
+  wl_output *targetOutput = nullptr;
+  if (monitorIndex >= 0 && monitorIndex < static_cast<int>(outputs_.size())) {
+    targetOutput = outputs_[monitorIndex];
+  }
+
   layerSurface_ = zwlr_layer_shell_v1_get_layer_surface(
-      layerShell_, surface_, nullptr, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM,
+      layerShell_, surface_, targetOutput, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM,
       scope.c_str());
   if (layerSurface_ == nullptr) {
     std::cerr << "LayerShellWindow: failed to create layer surface\n";
@@ -150,9 +159,11 @@ bool LayerShellWindow::initLayerSurface(int width, int height, int windowX, int 
                                      this);
   zwlr_layer_surface_v1_set_size(layerSurface_, static_cast<uint32_t>(width),
                                  static_cast<uint32_t>(height));
-  zwlr_layer_surface_v1_set_anchor(layerSurface_,
-                                   ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
+  
+  if (anchor == 0 && scope == "rainmeter-native") { // fallback for old calls if any, though SkinInstance will pass explicit anchors
+      anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+  }
+  zwlr_layer_surface_v1_set_anchor(layerSurface_, anchor);
   zwlr_layer_surface_v1_set_margin(layerSurface_, windowY, 0, 0, windowX);
   zwlr_layer_surface_v1_set_keyboard_interactivity(layerSurface_, 0);
 
