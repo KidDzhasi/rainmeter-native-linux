@@ -1,30 +1,30 @@
-# rainmeter-native
+# Rainmeter Native for Linux (Wayland)
 
-A native Linux rendering engine for Rainmeter skins. Built from the ground up with C++20, this project allows Linux users to parse, render, and interact with complex Rainmeter suites natively on their desktops without relying on WINE or Windows virtual machines.
+A lightning-fast, native C++ desktop widget and custom skin engine built for Linux on Wayland using NanoVG and the `wlr-layer-shell` protocol. It brings the modular aesthetic and power of Rainmeter directly to Linux desktops like Pop!_OS without legacy Windows translation layers.
 
-## Features
-* **Native Windowing:** Utilizes Wayland and LayerShell to draw true desktop widgets that sit underneath your active windows.
-* **ActionTimer Animations:** Supports 60FPS fluid UI animations and physics.
-* **Linux System Adapters:** Automatically intercepts Windows plugins (UsageMonitor, CoreTemp) and bridges them to native Linux `/proc` and `/sys` hardware metrics.
-* **PipeWire Audio Visualizer:** Native `AudioLevel` FFT processing for music visualizers.
+---
 
-## Dependencies (Ubuntu / Pop!_OS)
-Ensure you have the required build tools and libraries installed:
-\`\`\`bash
-sudo apt update
-sudo apt install build-essential cmake libwayland-dev libpulse-dev libfftw3-dev
-\`\`\`
+## 🎨 Featured Suite: TradSunset (Modular Grid)
+The flagship **TradSunset** suite features a cyberpunk-inspired modular layout with:
+- High-contrast sci-fi typography (**Orbitron**, **Rajdhani**, **Share Tech Mono**)
+- Real-time hardware performance rings and vertical progress bars for CPU, RAM, and Swap
+- Dynamic digital clock and localized weather widgets
 
-## Build Instructions
-\`\`\`bash
-git clone https://github.com/KidDzhasi/rainmeter-native-linux.git
-cd rainmeter-native-linux
-cmake -B build
-cmake --build build
-\`\`\`
+### Installation
+1. Clone or copy the `suites/TradSunset` folder into your local configuration directory:
+   \`\`\`bash
+   mkdir -p ~/.config/rainmeter-native/Skins/
+   cp -r suites/TradSunset ~/.config/rainmeter-native/Skins/
+   \`\`\`
+2. Launch the suite via the native engine:
+   \`\`\`bash
+   rainmeter-native ~/.config/rainmeter-native/Skins/TradSunset/TradSunset.ini
+   \`\`\`
 
-## Usage
-Launch the daemon by passing the path to your desired `.ini` skin files:
-\`\`\`bash
-./build/rainmeter-native ~/.config/rainmeter-native/Skins/PopStats/Stats.ini
-\`\`\`
+---
+
+## 🌍 Community Skins
+Want to share your own custom layout? Check out the [community folder](./community) to see user-submitted themes or learn how to contribute your own custom skin suite separate from the core official releases.
+
+## License
+Distributed under the MIT License. See `LICENSE` for more information.
