@@ -84,6 +84,13 @@ public:
   // from the EnvironmentManager before standard variable resolution.
   std::string expandBuiltins(std::string_view value) const;
 
+  // Resolves `relativePath` under `basePath`, matching each component
+  // case-insensitively against the real filesystem. Returns the true-cased
+  // absolute path. Reusable for locating @include targets, image files, etc.
+  static std::string
+  resolveCaseInsensitivePath(const std::string &basePath,
+                             const std::string &relativePath);
+
 private:
   // Trims leading/trailing ASCII whitespace from a view.
   static std::string_view trim(std::string_view sv);
@@ -98,7 +105,7 @@ private:
   // `baseDir` is the directory of the current file, used to resolve relative
   // @include targets. `depth` guards against include cycles.
   bool parseContent(std::string_view content, const std::string &baseDir,
-                    int depth);
+                    int depth, const std::string& initialSection = "");
 
   DataMap data_;
   std::string resourcesPath_;

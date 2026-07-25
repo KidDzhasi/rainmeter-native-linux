@@ -1,4 +1,9 @@
+
 build/
 *.o
 .vscode/
 rainmeter-native
+
+
+/build
+

@@ -129,7 +129,7 @@ void LayerShellWindow::handleGlobal(wl_registry *registry, uint32_t name,
   }
 }
 
-bool LayerShellWindow::initLayerSurface(int width, int height, const std::string &scope) {
+bool LayerShellWindow::initLayerSurface(int width, int height, int windowX, int windowY, const std::string &scope) {
   if (compositor_ == nullptr || layerShell_ == nullptr) {
     return false;
   }
@@ -152,8 +152,9 @@ bool LayerShellWindow::initLayerSurface(int width, int height, const std::string
                                  static_cast<uint32_t>(height));
   zwlr_layer_surface_v1_set_anchor(layerSurface_,
                                    ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
-                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-  zwlr_layer_surface_v1_set_margin(layerSurface_, 50, 50, 0, 0);
+                                       ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
+  zwlr_layer_surface_v1_set_margin(layerSurface_, windowY, 0, 0, windowX);
+  zwlr_layer_surface_v1_set_keyboard_interactivity(layerSurface_, 0);
 
   // Initialize EGL and create wl_egl_window before first commit
   if (!initEGL()) {
@@ -271,8 +272,11 @@ void LayerShellWindow::handlePointerMotion(double x, double y) {
 }
 
 void LayerShellWindow::handlePointerButton(uint32_t button, uint32_t state) {
-  if (state == 0 && mouseCb_) {
-    mouseCb_(pointerX_, pointerY_, button);
+  if (state == 0) {
+    std::cout << "[WAYLAND] Mouse click detected at X: " << pointerX_ << ", Y: " << pointerY_ << std::endl;
+    if (mouseCb_) {
+      mouseCb_(pointerX_, pointerY_, button);
+    }
   }
 }
 

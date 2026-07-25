@@ -19,58 +19,7 @@ static std::string toLowerString(const std::string& str) {
   return out;
 }
 
-NanoVGRenderer::Color NanoVGRenderer::Color::parse(std::string_view spec) {
-    while (!spec.empty() && (spec.front() == ' ' || spec.front() == '\t')) spec.remove_prefix(1);
-    while (!spec.empty() && (spec.back() == ' ' || spec.back() == '\t')) spec.remove_suffix(1);
-    if (spec.empty()) return Color{};
 
-    if (spec.find(',') == std::string_view::npos) {
-        std::string_view hexStr = spec;
-        if (hexStr.front() == '#') hexStr.remove_prefix(1);
-        if (hexStr.size() == 6 || hexStr.size() == 8) {
-            uint32_t val = 0;
-            auto [ptr, ec] = std::from_chars(hexStr.data(), hexStr.data() + hexStr.size(), val, 16);
-            if (ec == std::errc()) {
-                Color c;
-                if (hexStr.size() == 6) {
-                    c.r = ((val >> 16) & 0xFF) / 255.0;
-                    c.g = ((val >> 8) & 0xFF) / 255.0;
-                    c.b = (val & 0xFF) / 255.0;
-                    c.a = 1.0;
-                } else {
-                    c.r = ((val >> 24) & 0xFF) / 255.0;
-                    c.g = ((val >> 16) & 0xFF) / 255.0;
-                    c.b = ((val >> 8) & 0xFF) / 255.0;
-                    c.a = (val & 0xFF) / 255.0;
-                }
-                return c;
-            }
-        }
-    }
-
-    std::vector<int> components;
-    std::size_t start = 0;
-    while (start <= spec.size() && components.size() < 4) {
-        std::size_t comma = spec.find(',', start);
-        std::string_view token = (comma == std::string_view::npos) ? spec.substr(start) : spec.substr(start, comma - start);
-        while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) token.remove_prefix(1);
-        while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) token.remove_suffix(1);
-        int value = 0;
-        if (!token.empty()) std::from_chars(token.data(), token.data() + token.size(), value);
-        components.push_back(value);
-        if (comma == std::string_view::npos) break;
-        start = comma + 1;
-    }
-
-    Color c;
-    if (components.size() >= 3) {
-        c.r = components[0] / 255.0;
-        c.g = components[1] / 255.0;
-        c.b = components[2] / 255.0;
-        c.a = (components.size() >= 4) ? components[3] / 255.0 : 1.0;
-    }
-    return c;
-}
 
 NanoVGRenderer::~NanoVGRenderer() { reset(); }
 
@@ -84,7 +33,11 @@ void NanoVGRenderer::reset() {
 }
 
 NVGcolor NanoVGRenderer::toNVGColor(const Color& c) const {
-    return nvgRGBAf(c.r, c.g, c.b, c.a);
+    float a = static_cast<float>(c.a) / 255.0f;
+    float r = (static_cast<float>(c.r) / 255.0f) * a;
+    float g = (static_cast<float>(c.g) / 255.0f) * a;
+    float b = (static_cast<float>(c.b) / 255.0f) * a;
+    return nvgRGBAf(r, g, b, a);
 }
 
 bool NanoVGRenderer::beginEGL(int width, int height) {
@@ -114,6 +67,10 @@ void NanoVGRenderer::beginFrame(int width, int height, float pixelRatio) {
         width_ = width;
         height_ = height;
         glViewport(0, 0, width, height);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         nvgBeginFrame(vg_, width, height, pixelRatio);
     }
 }
@@ -126,7 +83,11 @@ void NanoVGRenderer::endFrame() {
 
 void NanoVGRenderer::clear(const Color &color) {
     if (!valid()) return;
-    glClearColor(color.r, color.g, color.b, color.a);
+    float a = static_cast<float>(color.a) / 255.0f;
+    glClearColor((static_cast<float>(color.r) / 255.0f) * a,
+                 (static_cast<float>(color.g) / 255.0f) * a,
+                 (static_cast<float>(color.b) / 255.0f) * a,
+                 a);
     glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 }
 
@@ -145,6 +106,26 @@ void NanoVGRenderer::strokeRect(double x, double y, double w, double h, double l
     nvgStrokeColor(vg_, toNVGColor(color));
     nvgStrokeWidth(vg_, lineWidth);
     nvgStroke(vg_);
+}
+
+void NanoVGRenderer::drawRectangle(double x, double y, double w, double h, double cornerRadius, const Color &fill, const Color &stroke, double lineWidth) {
+    if (!valid() || w <= 0 || h <= 0) return;
+    nvgBeginPath(vg_);
+    if (cornerRadius > 0) {
+        nvgRoundedRect(vg_, x, y, w, h, cornerRadius);
+    } else {
+        nvgRect(vg_, x, y, w, h);
+    }
+    
+    if (fill.a > 0.0) {
+        nvgFillColor(vg_, toNVGColor(fill));
+        nvgFill(vg_);
+    }
+    if (stroke.a > 0.0 && lineWidth > 0) {
+        nvgStrokeColor(vg_, toNVGColor(stroke));
+        nvgStrokeWidth(vg_, lineWidth);
+        nvgStroke(vg_);
+    }
 }
 
 void NanoVGRenderer::drawEllipse(double x, double y, double w, double h, const Color &fill, const Color &stroke, double lineWidth) {
@@ -257,11 +238,18 @@ NanoVGRenderer::ImageMetrics NanoVGRenderer::drawImage(const std::string &path, 
     return {true, finalW, finalH};
 }
 
-void NanoVGRenderer::drawBar(double x, double y, double w, double h, double percent, const Color &barColor, const Color &bgColor) {
+void NanoVGRenderer::drawBar(double x, double y, double w, double h, double percent, const Color &barColor, const Color &bgColor, bool horizontal) {
     if (!valid() || w <= 0 || h <= 0) return;
-    double frac = std::clamp(percent / 100.0, 0.0, 1.0);
+    double frac = std::clamp(percent, 0.0, 1.0);
     if (bgColor.a > 0.0) fillRect(x, y, w, h, bgColor);
-    fillRect(x, y, w * frac, h, barColor);
+    if (frac > 0.0) {
+        if (horizontal) {
+            fillRect(x, y, w * frac, h, barColor);
+        } else {
+            double barH = h * frac;
+            fillRect(x, y + h - barH, w, barH, barColor);
+        }
+    }
 }
 
 NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, double x, double y, const std::string &fontFace, double fontSize, const Color &color, TextAlign align) {

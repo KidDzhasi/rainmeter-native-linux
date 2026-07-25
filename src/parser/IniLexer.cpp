@@ -158,10 +158,29 @@ std::string IniLexer::computeResourcesPath(const std::string &skinFilePath) {
   std::error_code ec;
   fs::path dir = fs::path(skinFilePath).parent_path();
 
+  auto toLowerStr = [](const std::string &s) {
+    std::string out = s;
+    for (char &c : out) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+  };
+
   fs::path probe = dir;
   for (int i = 0; i < 8 && !probe.empty(); ++i) {
-    fs::path candidate = probe / "@Resources";
-    if (fs::exists(candidate, ec) && fs::is_directory(candidate, ec)) {
+    // Check case-insensitively for @Resources
+    std::string matchedRes;
+    if (fs::is_directory(probe, ec)) {
+      for (const auto &entry : fs::directory_iterator(probe, ec)) {
+        if (entry.is_directory(ec) && toLowerStr(entry.path().filename().string()) == "@resources") {
+          matchedRes = entry.path().filename().string();
+          break;
+        }
+      }
+    }
+
+    if (!matchedRes.empty()) {
+      fs::path candidate = probe / matchedRes;
       std::string s = candidate.string();
       if (!s.empty() && s.back() != '/') {
         s.push_back('/');
@@ -233,6 +252,66 @@ std::string IniLexer::expandBuiltins(std::string_view value) const {
   return out;
 }
 
+std::string
+IniLexer::resolveCaseInsensitivePath(const std::string &basePath,
+                                     const std::string &relativePath) {
+  // Normalize Windows separators to '/'.
+  std::string rel = relativePath;
+  std::replace(rel.begin(), rel.end(), '\\', '/');
+
+  fs::path current(basePath);
+  std::size_t start = 0;
+  bool broken = false;
+
+  // Lowercase helper for ASCII comparison.
+  auto toLowerStr = [](const std::string &s) {
+    std::string out = s;
+    for (char &c : out) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+  };
+
+  while (start <= rel.size()) {
+    const std::size_t slash = rel.find('/', start);
+    const std::string component = (slash == std::string::npos)
+                                      ? rel.substr(start)
+                                      : rel.substr(start, slash - start);
+
+    if (!component.empty() && component != ".") {
+      if (broken) {
+        current /= component;
+      } else {
+        // Scan the directory for a case-insensitive match.
+        const std::string wanted = toLowerStr(component);
+        std::string matched;
+        std::error_code ec;
+        if (fs::is_directory(current, ec)) {
+          for (const auto &entry : fs::directory_iterator(current, ec)) {
+            if (toLowerStr(entry.path().filename().string()) == wanted) {
+              matched = entry.path().filename().string();
+              break;
+            }
+          }
+        }
+        if (matched.empty()) {
+          current /= component;
+          broken = true;
+        } else {
+          current /= matched;
+        }
+      }
+    }
+
+    if (slash == std::string::npos) {
+      break;
+    }
+    start = slash + 1;
+  }
+
+  return current.string();
+}
+
 bool IniLexer::parseFile(const std::string &filePath) {
   data_.clear();
 
@@ -251,12 +330,12 @@ bool IniLexer::parseString(std::string_view content) {
   data_.clear();
   // No file context: #@# expands to whatever resourcesPath_ currently holds
   // (empty by default), and relative @include targets resolve against ".".
-  return parseContent(content, ".", 0);
+  return parseContent(content, ".", 0, "");
 }
 
 bool IniLexer::parseContent(std::string_view content,
-                            const std::string &baseDir, int depth) {
-  std::string currentSection; // empty => keys before any [Section]
+                            const std::string &baseDir, int depth, const std::string& initialSection) {
+  std::string currentSection = initialSection; // inherit from parent file if any
   std::size_t pos = 0;
   const std::size_t size = content.size();
 
@@ -334,9 +413,24 @@ bool IniLexer::parseContent(std::string_view content,
       }
 
       std::string includeContent;
-      if (readFileUtf8(target.string(), includeContent)) {
-        const std::string includeBase = target.parent_path().string();
-        parseContent(includeContent, includeBase, depth + 1);
+      std::string targetStr = target.string();
+      if (!readFileUtf8(targetStr, includeContent)) {
+        // Fallback: case-insensitive resolution.  Split the target into the
+        // directory and filename portions, then use the directory_iterator
+        // based resolver from ThemeParser to find the true-cased path.
+        fs::path parentDir = target.parent_path();
+        std::string filename = target.filename().string();
+        if (!parentDir.empty() && !filename.empty()) {
+          std::string ciPath = resolveCaseInsensitivePath(parentDir.string(), filename);
+          if (ciPath != targetStr) {
+            readFileUtf8(ciPath, includeContent);
+            targetStr = ciPath;
+          }
+        }
+      }
+      if (!includeContent.empty()) {
+        const std::string includeBase = fs::path(targetStr).parent_path().string();
+        parseContent(includeContent, includeBase, depth + 1, currentSection);
       }
       continue;
     }

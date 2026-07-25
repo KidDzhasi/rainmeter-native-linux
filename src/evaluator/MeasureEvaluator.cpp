@@ -9,6 +9,8 @@
 #include "SystemMeasures.hpp"
 #include "parser/IniLexer.hpp"
 
+#include <iostream>
+
 namespace {
 std::string formatDouble(double v) {
   char buf[64];
@@ -126,9 +128,29 @@ void MeasureEvaluator::loadFrom(const IniLexer &skin) {
           if (!mpris_) {
              mpris_ = std::make_shared<MprisClient>();
           }
+      } else if (lname == "actiontimer" || lname == "actiontimer.dll") {
+          m.type = Type::ActionTimerType;
+          m.actionTimer = std::make_shared<ActionTimer>();
+          m.actionTimer->loadFrom(skin, section);
+      } else if (lname == "usagemonitor" || lname == "usagemonitor.dll") {
+          m.type = Type::UsageMonitorType;
+          m.usageMonitor = std::make_shared<LinuxUsageMonitor>();
+          m.usageMonitor->loadFrom(skin, section);
+      } else if (lname == "coretemp" || lname == "coretemp.dll") {
+          m.type = Type::CoreTempType;
+          m.coreTemp = std::make_shared<LinuxCoreTemp>();
+          m.coreTemp->loadFrom(skin, section);
+      } else if (lname == "audiolevel" || lname == "audiolevel.dll") {
+          m.type = Type::AudioLevelType;
+          m.audioLevel = std::make_shared<LinuxAudioLevel>();
+          m.audioLevel->loadFrom(skin, section);
+          if (skin.getOr(section, "Parent", "").empty()) {
+              LinuxAudioLevel::registerParent(section, m.audioLevel);
+          }
       } else {
         m.type = Type::Plugin;
         m.pluginName = name;
+        std::cout << "Warning: unsupported Plugin='" << name << "' in [" << section << "], mocking as no-op\n";
       }
     } else if (kind == "Script") {
       m.type = Type::Script;
@@ -141,7 +163,7 @@ void MeasureEvaluator::loadFrom(const IniLexer &skin) {
           if (!scriptPath.empty() && scriptPath[0] != '/') {
               scriptPath = skin.environment().resolve("currentpath").value_or("") + scriptPath;
           }
-          m.script = std::make_shared<ScriptEnvironment>(const_cast<IniLexer*>(&skin), this);
+          m.script = std::make_shared<ScriptEnvironment>(const_cast<IniLexer*>(&skin), this, section);
           if (m.script->loadScript(scriptPath)) {
               m.script->callInitialize();
           }
@@ -199,6 +221,7 @@ void MeasureEvaluator::evaluate(const IniLexer &skin, std::function<void(const s
     case Type::Cpu: {
       const sysmeasure::CpuSample cur = sysmeasure::readCpuSample();
       m.numeric = sysmeasure::cpuPercent(m.prevCpu, cur);
+      m.percent = m.numeric / 100.0;
       m.prevCpu = cur;
       m.current = formatDouble(m.numeric);
       break;
@@ -206,15 +229,17 @@ void MeasureEvaluator::evaluate(const IniLexer &skin, std::function<void(const s
 
     case Type::PhysicalMemory: {
       const sysmeasure::MemoryInfo mem = sysmeasure::readMemory();
-      m.numeric = mem.usedBytes; // Usually it's bytes in Rainmeter
-      m.current = std::to_string(static_cast<long long>(m.numeric));
+      m.numeric = mem.usedPercent / 100.0;
+      m.percent = m.numeric;
+      m.current = formatDouble(mem.usedPercent);
       break;
     }
 
     case Type::SwapMemory: {
       const sysmeasure::MemoryInfo mem = sysmeasure::readMemory();
-      m.numeric = (mem.swapTotalBytes > 0) ? (mem.swapTotalBytes - mem.swapFreeBytes) : 0;
-      m.current = std::to_string(static_cast<long long>(m.numeric));
+      m.numeric = mem.swapUsedPercent / 100.0;
+      m.percent = m.numeric;
+      m.current = formatDouble(mem.swapUsedPercent);
       break;
     }
 
@@ -371,6 +396,42 @@ void MeasureEvaluator::evaluate(const IniLexer &skin, std::function<void(const s
       }
       break;
     }
+    
+    case Type::UsageMonitorType: {
+      if (m.usageMonitor) {
+          if (m.dynamicVariables) {
+              m.usageMonitor->loadFrom(skin, name);
+          }
+          m.usageMonitor->update();
+          m.numeric = m.usageMonitor->numericValue();
+          m.current = m.usageMonitor->stringValue();
+      }
+      break;
+    }
+
+    case Type::CoreTempType: {
+      if (m.coreTemp) {
+          if (m.dynamicVariables) {
+              m.coreTemp->loadFrom(skin, name);
+          }
+          m.coreTemp->update();
+          m.numeric = m.coreTemp->numericValue();
+          m.current = m.coreTemp->stringValue();
+      }
+      break;
+    }
+    
+    case Type::AudioLevelType: {
+      if (m.audioLevel) {
+          if (m.dynamicVariables) {
+              m.audioLevel->loadFrom(skin, name);
+          }
+          m.audioLevel->update();
+          m.numeric = m.audioLevel->numericValue();
+          m.current = m.audioLevel->stringValue();
+      }
+      break;
+    }
 
     case Type::Unknown:
     default:
@@ -382,26 +443,76 @@ void MeasureEvaluator::evaluate(const IniLexer &skin, std::function<void(const s
 }
 
 std::string MeasureEvaluator::value(std::string_view measureName) const {
-  std::string name(measureName);
-  auto it = measures_.find(name);
-  if (it != measures_.end()) {
-    return it->second.current;
+  std::string lower(measureName);
+  for (char &c : lower) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  for (const auto &[name, m] : measures_) {
+      std::string lName = name;
+      for (char &c : lName) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      }
+      if (lName == lower) return m.current;
   }
   return "";
 }
 
 double MeasureEvaluator::numericValue(std::string_view measureName) const {
-  std::string name(measureName);
-  auto it = measures_.find(name);
-  if (it != measures_.end()) {
-    return it->second.numeric;
+  std::string lower(measureName);
+  for (char &c : lower) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  for (const auto &[name, m] : measures_) {
+      std::string lName = name;
+      for (char &c : lName) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      }
+      if (lName == lower) return m.numeric;
   }
   return 0.0;
+}
+
+double MeasureEvaluator::percentValue(std::string_view measureName) const {
+  std::string lower(measureName);
+  for (char &c : lower) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  for (const auto &[name, m] : measures_) {
+      std::string lName = name;
+      for (char &c : lName) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      }
+      if (lName == lower) return m.percent;
+  }
+  return 0.0;
+}
+
+bool MeasureEvaluator::hasMeasure(std::string_view measureName) const {
+  std::string lower(measureName);
+  for (char &c : lower) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  for (const auto &[name, m] : measures_) {
+      std::string lName = name;
+      for (char &c : lName) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      }
+      if (lName == lower) return true;
+  }
+  return false;
 }
 
 void MeasureEvaluator::fireBang(const std::string& bang) const {
     if (currentBangCb_) {
         currentBangCb_(bang);
+    }
+}
+
+void MeasureEvaluator::tickActionTimers(double dtMs, std::function<void(const std::string&)> fireBang) {
+    for (auto& [name, m] : measures_) {
+        if (m.type == Type::ActionTimerType && m.actionTimer) {
+            m.actionTimer->tick(dtMs, fireBang);
+        }
     }
 }
 

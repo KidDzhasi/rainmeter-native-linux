@@ -1,0 +1,10 @@
+[Variables]
+HideAlbum=0
+SideGlow=0
+H=170
+BarW=4
+BarCorner=2
+RollSpeedMultiplier=0.5
+UpdateRate=10
+AutoScroll=1
+Scale=1

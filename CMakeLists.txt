@@ -26,6 +26,9 @@ pkg_check_modules(LIBZIP REQUIRED libzip)
 pkg_check_modules(LIBCURL REQUIRED libcurl)
 pkg_check_modules(GIO REQUIRED gio-2.0)
 pkg_check_modules(LUA REQUIRED lua5.3)
+pkg_check_modules(GLIB2 REQUIRED glib-2.0)
+pkg_check_modules(DBUS1 REQUIRED dbus-1)
+pkg_check_modules(PULSE REQUIRED libpulse-simple libpulse)
 
 
 # --- Wayland protocol code generation (wlr-layer-shell) ---
@@ -80,6 +83,9 @@ file(GLOB_RECURSE RAINMETER_NATIVE_SOURCES CONFIGURE_DEPENDS
 
 add_executable(rainmeter-native
     ${RAINMETER_NATIVE_SOURCES}
+    src/evaluator/LinuxUsageMonitor.cpp
+    src/evaluator/LinuxCoreTemp.cpp
+    src/evaluator/LinuxAudioLevel.cpp
     ${nanovg_SOURCE_DIR}/src/nanovg.c
     ${LAYER_SHELL_SOURCE}
     ${LAYER_SHELL_HEADER})
@@ -98,7 +104,10 @@ target_include_directories(rainmeter-native PRIVATE
     ${LIBZIP_INCLUDE_DIRS}
     ${LIBCURL_INCLUDE_DIRS}
     ${GIO_INCLUDE_DIRS}
-    ${LUA_INCLUDE_DIRS})
+    ${LUA_INCLUDE_DIRS}
+    ${GLIB2_INCLUDE_DIRS}
+    ${DBUS1_INCLUDE_DIRS}
+    ${PULSE_INCLUDE_DIRS})
 
 
 target_compile_options(rainmeter-native PRIVATE
@@ -110,7 +119,10 @@ target_compile_options(rainmeter-native PRIVATE
     ${LIBZIP_CFLAGS_OTHER}
     ${LIBCURL_CFLAGS_OTHER}
     ${GIO_CFLAGS_OTHER}
-    ${LUA_CFLAGS_OTHER})
+    ${LUA_CFLAGS_OTHER}
+    ${GLIB2_CFLAGS_OTHER}
+    ${DBUS1_CFLAGS_OTHER}
+    ${PULSE_CFLAGS_OTHER})
 
 
 target_link_libraries(rainmeter-native PRIVATE
@@ -124,6 +136,8 @@ target_link_libraries(rainmeter-native PRIVATE
     ${LIBCURL_LIBRARIES}
     ${GIO_LIBRARIES}
     ${LUA_LIBRARIES}
+    ${GLIB2_LIBRARIES}
+    ${DBUS1_LIBRARIES}
+    ${PULSE_LIBRARIES}
     Threads::Threads
     rt)
-

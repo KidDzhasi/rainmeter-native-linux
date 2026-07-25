@@ -7,22 +7,16 @@
 #include <array>
 
 #include "nanovg.h"
+#include "utils/ColorParser.hpp"
 
 class NanoVGRenderer {
 public:
+  using Color = Utils::Color;
   enum class TextAlign { Left, Center, Right, CenterCenter };
 
   struct TextMetrics {
     double width = 0.0;
     double height = 0.0;
-  };
-
-  struct Color {
-    double r = 0.0;
-    double g = 0.0;
-    double b = 0.0;
-    double a = 1.0;
-    static Color parse(std::string_view spec);
   };
 
   NanoVGRenderer() = default;
@@ -39,6 +33,7 @@ public:
   void clear(const Color &color);
   void fillRect(double x, double y, double w, double h, const Color &color);
   void strokeRect(double x, double y, double w, double h, double lineWidth, const Color &color);
+  void drawRectangle(double x, double y, double w, double h, double cornerRadius, const Color &fill, const Color &stroke, double lineWidth);
   void drawEllipse(double x, double y, double w, double h, const Color &fill, const Color &stroke, double lineWidth);
   void drawLine(double x1, double y1, double x2, double y2, double lineWidth, const Color &color);
 
@@ -49,7 +44,7 @@ public:
   };
 
   ImageMetrics drawImage(const std::string &path, double x, double y, double w = 0, double h = 0, int preserveAspectRatio = 0);
-  void drawBar(double x, double y, double w, double h, double percent, const Color &barColor, const Color &bgColor);
+  void drawBar(double x, double y, double w, double h, double percent, const Color &barColor, const Color &bgColor, bool horizontal = true);
   
   TextMetrics drawText(const std::string &text, double x, double y,
                        const std::string &fontFace, double fontSize,

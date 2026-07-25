@@ -6,8 +6,8 @@
 
 #include <lua.hpp>
 
-ScriptEnvironment::ScriptEnvironment(IniLexer* skin, MeasureEvaluator* measures)
-    : skin_(skin), measures_(measures) {
+ScriptEnvironment::ScriptEnvironment(IniLexer* skin, MeasureEvaluator* measures, const std::string& sectionName)
+    : skin_(skin), measures_(measures), sectionName_(sectionName) {
     L_ = luaL_newstate();
     luaL_openlibs(L_);
     bindSkinApi();
@@ -93,6 +93,10 @@ void ScriptEnvironment::bindSkinApi() {
     lua_setfield(L_, -2, "GetVariable");
     
     lua_pushlightuserdata(L_, this);
+    lua_pushcclosure(L_, l_SetVariable, 1);
+    lua_setfield(L_, -2, "SetVariable");
+    
+    lua_pushlightuserdata(L_, this);
     lua_pushcclosure(L_, l_GetMeasure, 1);
     lua_setfield(L_, -2, "GetMeasure");
     
@@ -103,8 +107,29 @@ void ScriptEnvironment::bindSkinApi() {
     lua_pushlightuserdata(L_, this);
     lua_pushcclosure(L_, l_Bang, 1);
     lua_setfield(L_, -2, "Bang");
+
+    lua_pushlightuserdata(L_, this);
+    lua_pushcclosure(L_, l_ParseFormula, 1);
+    lua_setfield(L_, -2, "ParseFormula");
     
     lua_setglobal(L_, "SKIN");
+
+    // Setup global SELF object
+    lua_newtable(L_);
+
+    lua_pushlightuserdata(L_, this);
+    lua_pushcclosure(L_, l_Self_GetOption, 1);
+    lua_setfield(L_, -2, "GetOption");
+
+    lua_pushlightuserdata(L_, this);
+    lua_pushcclosure(L_, l_Self_GetNumberOption, 1);
+    lua_setfield(L_, -2, "GetNumberOption");
+
+    lua_pushlightuserdata(L_, this);
+    lua_pushcclosure(L_, l_Self_GetName, 1);
+    lua_setfield(L_, -2, "GetName");
+
+    lua_setglobal(L_, "SELF");
     
     // Create metatable for Measure object
     luaL_newmetatable(L_, "MeasureMeta");
@@ -128,9 +153,22 @@ void ScriptEnvironment::bindSkinApi() {
 int ScriptEnvironment::l_GetVariable(lua_State* L) {
     ScriptEnvironment* self = (ScriptEnvironment*)lua_touserdata(L, lua_upvalueindex(1));
     const char* varName = luaL_checkstring(L, 2); // param 1 is SKIN table, param 2 is varName
-    std::string val = self->skin_->getCaseInsensitive("Variables", varName).value_or("");
-    lua_pushstring(L, val.c_str());
+    const char* def = luaL_optstring(L, 3, "");
+    auto valOpt = self->skin_->getCaseInsensitive("Variables", varName);
+    if (valOpt) {
+        lua_pushstring(L, valOpt->c_str());
+    } else {
+        lua_pushstring(L, def);
+    }
     return 1;
+}
+
+int ScriptEnvironment::l_SetVariable(lua_State* L) {
+    ScriptEnvironment* self = (ScriptEnvironment*)lua_touserdata(L, lua_upvalueindex(1));
+    const char* varName = luaL_checkstring(L, 2);
+    const char* val = luaL_checkstring(L, 3);
+    self->measures_->fireBang("!SetVariable \"" + std::string(varName) + "\" \"" + std::string(val) + "\"");
+    return 0;
 }
 
 int ScriptEnvironment::l_GetMeasure(lua_State* L) {
@@ -160,6 +198,61 @@ int ScriptEnvironment::l_Bang(lua_State* L) {
     const char* bangStr = luaL_checkstring(L, 2);
     self->measures_->fireBang(bangStr);
     return 0;
+}
+
+int ScriptEnvironment::l_ParseFormula(lua_State* L) {
+    ScriptEnvironment* self = (ScriptEnvironment*)lua_touserdata(L, lua_upvalueindex(1));
+    const char* formulaStr = luaL_checkstring(L, 2);
+    
+    MathParser mp(
+        [self](const std::string& var) {
+            return self->skin_->getCaseInsensitive("Variables", var).value_or("");
+        },
+        [self](const std::string& meas) {
+            return self->measures_->numericValue(meas);
+        }
+    );
+    double result = mp.evaluateOr(formulaStr, 0.0);
+    lua_pushnumber(L, result);
+    return 1;
+}
+
+// SELF methods
+int ScriptEnvironment::l_Self_GetOption(lua_State* L) {
+    ScriptEnvironment* self = (ScriptEnvironment*)lua_touserdata(L, lua_upvalueindex(1));
+    const char* optName = luaL_checkstring(L, 2);
+    const char* def = luaL_optstring(L, 3, "");
+    auto valOpt = self->skin_->getCaseInsensitive(self->sectionName_, optName);
+    if (valOpt) {
+        lua_pushstring(L, valOpt->c_str());
+    } else {
+        lua_pushstring(L, def);
+    }
+    return 1;
+}
+
+int ScriptEnvironment::l_Self_GetNumberOption(lua_State* L) {
+    ScriptEnvironment* self = (ScriptEnvironment*)lua_touserdata(L, lua_upvalueindex(1));
+    const char* optName = luaL_checkstring(L, 2);
+    double def = luaL_optnumber(L, 3, 0.0);
+    auto valOpt = self->skin_->getCaseInsensitive(self->sectionName_, optName);
+    if (valOpt) {
+        try {
+            double num = std::stod(*valOpt);
+            lua_pushnumber(L, num);
+        } catch (...) {
+            lua_pushnumber(L, def);
+        }
+    } else {
+        lua_pushnumber(L, def);
+    }
+    return 1;
+}
+
+int ScriptEnvironment::l_Self_GetName(lua_State* L) {
+    ScriptEnvironment* self = (ScriptEnvironment*)lua_touserdata(L, lua_upvalueindex(1));
+    lua_pushstring(L, self->sectionName_.c_str());
+    return 1;
 }
 
 // Measure methods

@@ -36,6 +36,7 @@ public:
   // Creates a BOTTOM-layer surface of the requested size, anchored to the
   // top-left of the output, and performs the configure handshake.
   bool initLayerSurface(int width, int height,
+                        int windowX = 0, int windowY = 0,
                         const std::string &scope = "rainmeter-native");
 
   // Dynamically resizes the surface.

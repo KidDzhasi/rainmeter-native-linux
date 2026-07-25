@@ -12,6 +12,10 @@
 #include "WebFetcher.hpp"
 #include "MprisClient.hpp"
 #include "ScriptEnvironment.hpp"
+#include "ActionTimer.hpp"
+#include "LinuxUsageMonitor.hpp"
+#include "LinuxCoreTemp.hpp"
+#include "LinuxAudioLevel.hpp"
 #include <functional>
 
 class IniLexer;
@@ -42,6 +46,12 @@ public:
   // Time measures return 0. Returns 0 for unknown measures.
   double numericValue(std::string_view measureName) const;
 
+  // Percentage output of a measure (0.0 to 1.0). Used by Bar meters.
+  double percentValue(std::string_view measureName) const;
+
+  // Check if a measure exists by name (case-insensitive)
+  bool hasMeasure(std::string_view measureName) const;
+
   // Returns the MPRIS client if active, nullptr otherwise.
   std::shared_ptr<MprisClient> getMpris() const { return mpris_; }
 
@@ -55,6 +65,18 @@ public:
 
   // Expose bang execution to ScriptEnvironment
   void fireBang(const std::string& bang) const;
+
+  // Returns the ActionTimer for a named measure, or nullptr.
+  std::shared_ptr<ActionTimer> getActionTimer(const std::string& measureName) const {
+      auto it = measures_.find(measureName);
+      if (it != measures_.end() && it->second.type == Type::ActionTimerType) {
+          return it->second.actionTimer;
+      }
+      return nullptr;
+  }
+
+  // Tick all active ActionTimers with the render thread delta time.
+  void tickActionTimers(double dtMs, std::function<void(const std::string&)> fireBang);
 
   std::size_t count() const noexcept { return measures_.size(); }
 
@@ -74,6 +96,10 @@ private:
     NowPlaying,
     Plugin,
     Script,
+    ActionTimerType,
+    UsageMonitorType,
+    CoreTempType,
+    AudioLevelType,
   };
 
   struct Measure {
@@ -83,6 +109,7 @@ private:
     std::string pluginName;        // Plugin: the requested .dll / plugin name
     std::string current;           // last evaluated string value
     double numeric = 0.0;          // last evaluated numeric value
+    double percent = 0.0;          // last evaluated percentage (0.0 to 1.0)
     sysmeasure::CpuSample prevCpu; // CPU: previous tick sample
     sysmeasure::NetStats prevNet;  // NetIn/NetOut: previous tick sample
     std::string interfaceName;     // NetIn/NetOut: interface name
@@ -98,6 +125,10 @@ private:
     
     std::string playerType;        // NowPlaying: property to extract
     std::shared_ptr<ScriptEnvironment> script; // Script: Lua environment
+    std::shared_ptr<ActionTimer> actionTimer;  // ActionTimer: native plugin
+    std::shared_ptr<LinuxUsageMonitor> usageMonitor; // UsageMonitor adapter
+    std::shared_ptr<LinuxCoreTemp> coreTemp;   // CoreTemp adapter
+    std::shared_ptr<LinuxAudioLevel> audioLevel; // AudioLevel adapter
     
     bool dynamicVariables = false; // re-evaluate format/drive/pluginName/formula
   };
