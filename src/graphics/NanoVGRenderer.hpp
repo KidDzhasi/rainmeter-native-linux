@@ -35,6 +35,7 @@ public:
   void strokeRect(double x, double y, double w, double h, double lineWidth, const Color &color);
   void drawRectangle(double x, double y, double w, double h, double cornerRadius, const Color &fill, const Color &stroke, double lineWidth);
   void drawEllipse(double x, double y, double w, double h, const Color &fill, const Color &stroke, double lineWidth);
+  void drawAdvancedMeter(double x, double y, double w, double h, double radius, double angle_deg, const Color &color);
   void drawLine(double x1, double y1, double x2, double y2, double lineWidth, const Color &color);
 
   struct ImageMetrics {

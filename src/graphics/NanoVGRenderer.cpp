@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <iostream>
+#include <cmath>
 
 // NanoVG GL3 implementation
 #define NANOVG_GL3_IMPLEMENTATION
@@ -147,6 +148,34 @@ void NanoVGRenderer::drawEllipse(double x, double y, double w, double h, const C
         nvgStrokeWidth(vg_, lineWidth);
         nvgStroke(vg_);
     }
+}
+
+void NanoVGRenderer::drawAdvancedMeter(double x, double y, double w, double h, double radius, double angle_deg, const Color &color) {
+    if (!valid() || w <= 0 || h <= 0) return;
+    
+    nvgSave(vg_);
+
+    if (angle_deg != 0.0) {
+        double angle_rad = angle_deg * (M_PI / 180.0);
+        nvgTranslate(vg_, x + w / 2.0, y + h / 2.0);
+        nvgRotate(vg_, angle_rad);
+        nvgTranslate(vg_, -(x + w / 2.0), -(y + h / 2.0));
+    }
+
+    nvgBeginPath(vg_);
+    
+    if (radius > 0) {
+        double max_radius = std::min(w / 2.0, h / 2.0);
+        if (radius > max_radius) radius = max_radius;
+        nvgRoundedRect(vg_, x, y, w, h, radius);
+    } else {
+        nvgRect(vg_, x, y, w, h);
+    }
+
+    nvgFillColor(vg_, toNVGColor(color));
+    nvgFill(vg_);
+
+    nvgRestore(vg_);
 }
 
 void NanoVGRenderer::drawLine(double x1, double y1, double x2, double y2, double lineWidth, const Color &color) {

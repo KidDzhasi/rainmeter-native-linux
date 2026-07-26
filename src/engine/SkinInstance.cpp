@@ -283,7 +283,20 @@ void SkinInstance::paintScene() {
       } else {
         curWidth = w > 0 ? w : 32;
         curHeight = h > 0 ? h : 32;
-        renderer_.strokeRect(x, y, curWidth, curHeight, 1.0, textColor);
+        Color fillColor = {0, 0, 0, 0};
+        std::string scRaw = skin_.getOr(section, "SolidColor", "");
+        if (!scRaw.empty()) {
+          std::string scSpec = resolveVariables(skin_, &measures_, section, scRaw);
+          if (!scSpec.empty()) fillColor = Utils::ParseColor(scSpec);
+        }
+        double cornerRadius = resolveNum(skin_, *math_, section, "CornerRadius", 0.0);
+        
+        if (fillColor.a > 0.0) {
+          Color emptyStroke = {0, 0, 0, 0};
+          renderer_.drawRectangle(x, y, curWidth, curHeight, cornerRadius, fillColor, emptyStroke, 0.0);
+        } else {
+          renderer_.strokeRect(x, y, curWidth, curHeight, 1.0, textColor);
+        }
       }
 
     } else if (type == "Shape") {
