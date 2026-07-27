@@ -211,7 +211,30 @@ void SkinInstance::paintScene() {
 
   TransformManager transformManager;
 
-  for (const auto &[section, keys] : skin_.data()) {
+    // --- Z-ORDER FIX: Layering (0: Backgrounds, 1: Bars/Graphs, 2: Text/Fonts) ---
+  std::vector<decltype(skin_.data().begin())> sortedSections;
+  for (auto it = skin_.data().begin(); it != skin_.data().end(); ++it) {
+      sortedSections.push_back(it);
+  }
+  
+  std::stable_sort(sortedSections.begin(), sortedSections.end(), [](const auto& a, const auto& b) {
+      auto getZIndex = [](const std::string& type) {
+          if (type == "Shape" || type == "Image") return 0; // Bottom layer
+          if (type == "String") return 2;                   // Top layer (Fonts/Text)
+          return 1;                                         // Middle layer (Bars, Histograms)
+      };
+      
+      auto typeA = a->second.find("Meter");
+      auto typeB = b->second.find("Meter");
+      
+      int zA = (typeA != a->second.end()) ? getZIndex(typeA->second) : 1;
+      int zB = (typeB != b->second.end()) ? getZIndex(typeB->second) : 1;
+      
+      return zA < zB;
+  });
+
+  for (const auto& it : sortedSections) {
+    const auto &[section, keys] = *it;
     auto meterIt = keys.find("Meter");
     if (meterIt == keys.end()) {
       continue;
