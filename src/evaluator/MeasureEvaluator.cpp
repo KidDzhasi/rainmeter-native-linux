@@ -1,4 +1,5 @@
 #include "MeasureEvaluator.hpp"
+#include <cmath>
 
 #include <chrono>
 #include <cstdio>
@@ -68,6 +69,16 @@ void MeasureEvaluator::loadFrom(const IniLexer &skin) {
 
     Measure m;
     m.dynamicVariables = (skin.getOr(section, "DynamicVariables", "0") == "1");
+    m.minValue = std::stod(skin.getOr(section, "MinValue", "0.0"));
+    
+    // Some measures like CPU implicitly have MaxValue=100.0, but for Time it's defined by user in INI
+    // Defaulting MaxValue to 1.0 but parse if it exists.
+    std::string maxValStr = skin.getOr(section, "MaxValue", "");
+    if (!maxValStr.empty()) {
+        try { m.maxValue = std::stod(maxValStr); } catch (...) { m.maxValue = 1.0; }
+    } else {
+        m.maxValue = 1.0; // We'll handle implicit maximums per-type if needed, or 1.0
+    }
 
     const std::string &kind = measureIt->second;
     if (kind == "Time") {
@@ -147,6 +158,14 @@ void MeasureEvaluator::loadFrom(const IniLexer &skin) {
           if (skin.getOr(section, "Parent", "").empty()) {
               LinuxAudioLevel::registerParent(section, m.audioLevel);
           }
+      } else if (lname == "powerplugin" || lname == "powerplugin.dll") {
+          m.type = Type::PowerPluginType;
+          m.powerPlugin = std::make_shared<LinuxPowerPlugin>();
+          m.powerPlugin->loadFrom(skin, section);
+      } else if (lname == "inputtext" || lname == "inputtext.dll") {
+          m.type = Type::InputTextType;
+          m.inputTextPlugin = std::make_shared<InputTextPlugin>();
+          m.inputTextPlugin->loadFrom(skin, section);
       } else {
         m.type = Type::Plugin;
         m.pluginName = name;
@@ -175,10 +194,10 @@ void MeasureEvaluator::loadFrom(const IniLexer &skin) {
     measures_.emplace(section, std::move(m));
   }
 
-  evaluate(skin);
+  evaluate(skin, 1000.0); // Force initial fetch
 }
 
-void MeasureEvaluator::evaluate(const IniLexer &skin, std::function<void(const std::string&)> executeBangs) {
+void MeasureEvaluator::evaluate(const IniLexer &skin, double dtMs, std::function<void(const std::string&)> executeBangs) {
   currentBangCb_ = executeBangs;
   
   // Configure math parser with current state
@@ -200,75 +219,128 @@ void MeasureEvaluator::evaluate(const IniLexer &skin, std::function<void(const s
       const auto now_tp = clock::now();
       const std::time_t now_c = clock::to_time_t(now_tp);
       
-      // Rainmeter numeric value for time is the Windows FILETIME timestamp
-      // (100-nanosecond intervals since Jan 1, 1601).
-      // Unix epoch is 11644473600 seconds after Windows epoch.
+      auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now_tp.time_since_epoch()) % 1000;
+      double msFraction = ms.count() / 1000.0;
+      
       uint64_t winTime = (static_cast<uint64_t>(now_c) + 11644473600ULL) * 10000000ULL;
-      m.numeric = static_cast<double>(winTime);
+      
+      std::tm localTm{};
+      localtime_r(&now_c, &localTm);
 
       if (m.format.empty()) {
+        m.numeric = static_cast<double>(winTime);
         m.current = std::to_string(winTime);
+        // Fallback for timestamp
+        m.percent = (m.maxValue > 0.0) ? (m.numeric / m.maxValue) : 0.0;
       } else {
-        std::tm localTm{};
-        localtime_r(&now_c, &localTm);
         std::ostringstream out;
         out << std::put_time(&localTm, m.format.c_str());
         m.current = out.str();
+        
+        try {
+            m.numeric = std::stod(m.current);
+            
+            // Continuous sweeping
+            if (m.format == "%S" || m.format == "%#S") {
+                m.numeric += msFraction;
+            } else if (m.format == "%M" || m.format == "%#M") {
+                m.numeric += (localTm.tm_sec + msFraction) / 60.0;
+            } else if (m.format == "%I" || m.format == "%#I" || m.format == "%H" || m.format == "%#H") {
+                m.numeric += (localTm.tm_min + (localTm.tm_sec + msFraction) / 60.0) / 60.0;
+            }
+            
+        } catch (...) {
+            m.numeric = 0.0;
+        }
+        
+        double range = m.maxValue - m.minValue;
+        if (range > 0.0) {
+            m.percent = (m.numeric - m.minValue) / range;
+        } else {
+            m.percent = 0.0;
+        }
       }
       break;
     }
 
     case Type::Cpu: {
-      const sysmeasure::CpuSample cur = sysmeasure::readCpuSample();
-      m.numeric = sysmeasure::cpuPercent(m.prevCpu, cur);
+      m.updateTimer += dtMs;
+      if (m.updateTimer >= 1000.0) {
+          m.updateTimer = std::fmod(m.updateTimer, 1000.0);
+          const sysmeasure::CpuSample cur = sysmeasure::readCpuSample();
+          m.targetNumeric = sysmeasure::cpuPercent(m.prevCpu, cur);
+          m.prevCpu = cur;
+      }
+      
+      // Interpolate towards target
+      m.numeric += (m.targetNumeric - m.numeric) * (dtMs / 100.0); // Simple smoothing factor
       m.percent = m.numeric / 100.0;
-      m.prevCpu = cur;
       m.current = formatDouble(m.numeric);
       break;
     }
 
     case Type::PhysicalMemory: {
-      const sysmeasure::MemoryInfo mem = sysmeasure::readMemory();
-      m.numeric = mem.usedPercent / 100.0;
+      m.updateTimer += dtMs;
+      if (m.updateTimer >= 1000.0) {
+          m.updateTimer = std::fmod(m.updateTimer, 1000.0);
+          const sysmeasure::MemoryInfo mem = sysmeasure::readMemory();
+          m.targetNumeric = mem.usedPercent / 100.0;
+      }
+      m.numeric += (m.targetNumeric - m.numeric) * (dtMs / 100.0);
       m.percent = m.numeric;
-      m.current = formatDouble(mem.usedPercent);
+      m.current = formatDouble(m.numeric * 100.0);
       break;
     }
 
     case Type::SwapMemory: {
-      const sysmeasure::MemoryInfo mem = sysmeasure::readMemory();
-      m.numeric = mem.swapUsedPercent / 100.0;
+      m.updateTimer += dtMs;
+      if (m.updateTimer >= 1000.0) {
+          m.updateTimer = std::fmod(m.updateTimer, 1000.0);
+          const sysmeasure::MemoryInfo mem = sysmeasure::readMemory();
+          m.targetNumeric = mem.swapUsedPercent / 100.0;
+      }
+      m.numeric += (m.targetNumeric - m.numeric) * (dtMs / 100.0);
       m.percent = m.numeric;
-      m.current = formatDouble(mem.swapUsedPercent);
+      m.current = formatDouble(m.numeric * 100.0);
       break;
     }
 
     case Type::NetIn: {
+      m.updateTimer += dtMs;
       if (m.dynamicVariables) {
         m.interfaceName = resolveVariables(skin, skin.getOr(name, "Interface", ""));
       }
-      sysmeasure::NetStats cur = sysmeasure::readNetStats(m.interfaceName);
-      if (m.prevNet.valid && cur.valid) {
-        m.numeric = static_cast<double>(cur.rxBytes - m.prevNet.rxBytes);
-      } else {
-        m.numeric = 0.0;
+      if (m.updateTimer >= 1000.0) {
+          m.updateTimer = std::fmod(m.updateTimer, 1000.0);
+          sysmeasure::NetStats cur = sysmeasure::readNetStats(m.interfaceName);
+          if (m.prevNet.valid && cur.valid) {
+            m.targetNumeric = static_cast<double>(cur.rxBytes - m.prevNet.rxBytes);
+          } else {
+            m.targetNumeric = 0.0;
+          }
+          m.prevNet = cur;
       }
-      m.prevNet = cur;
+      m.numeric += (m.targetNumeric - m.numeric) * (dtMs / 100.0);
       m.current = std::to_string(static_cast<long long>(m.numeric));
       break;
     }
 
     case Type::NetOut: {
+      m.updateTimer += dtMs;
       if (m.dynamicVariables) {
         m.interfaceName = resolveVariables(skin, skin.getOr(name, "Interface", ""));
       }
-      sysmeasure::NetStats cur = sysmeasure::readNetStats(m.interfaceName);
-      if (m.prevNet.valid && cur.valid) {
-        m.numeric = static_cast<double>(cur.txBytes - m.prevNet.txBytes);
-      } else {
-        m.numeric = 0.0;
+      if (m.updateTimer >= 1000.0) {
+          m.updateTimer = std::fmod(m.updateTimer, 1000.0);
+          sysmeasure::NetStats cur = sysmeasure::readNetStats(m.interfaceName);
+          if (m.prevNet.valid && cur.valid) {
+            m.targetNumeric = static_cast<double>(cur.txBytes - m.prevNet.txBytes);
+          } else {
+            m.targetNumeric = 0.0;
+          }
+          m.prevNet = cur;
       }
-      m.prevNet = cur;
+      m.numeric += (m.targetNumeric - m.numeric) * (dtMs / 100.0);
       m.current = std::to_string(static_cast<long long>(m.numeric));
       break;
     }
@@ -405,6 +477,8 @@ void MeasureEvaluator::evaluate(const IniLexer &skin, std::function<void(const s
           m.usageMonitor->update();
           m.numeric = m.usageMonitor->numericValue();
           m.current = m.usageMonitor->stringValue();
+          double range = m.maxValue - m.minValue;
+          m.percent = (range > 0.0) ? std::clamp((m.numeric - m.minValue) / range, 0.0, 1.0) : m.numeric;
       }
       break;
     }
@@ -417,6 +491,8 @@ void MeasureEvaluator::evaluate(const IniLexer &skin, std::function<void(const s
           m.coreTemp->update();
           m.numeric = m.coreTemp->numericValue();
           m.current = m.coreTemp->stringValue();
+          double range = m.maxValue - m.minValue;
+          m.percent = (range > 0.0) ? std::clamp((m.numeric - m.minValue) / range, 0.0, 1.0) : m.numeric;
       }
       break;
     }
@@ -426,9 +502,36 @@ void MeasureEvaluator::evaluate(const IniLexer &skin, std::function<void(const s
           if (m.dynamicVariables) {
               m.audioLevel->loadFrom(skin, name);
           }
-          m.audioLevel->update();
+          m.audioLevel->update(dtMs);
           m.numeric = m.audioLevel->numericValue();
           m.current = m.audioLevel->stringValue();
+          // AudioLevel is inherently 0.0 to 1.0, but we apply Min/Max scaling if the user overrode it.
+          double range = m.maxValue - m.minValue;
+          m.percent = (range > 0.0 && m.maxValue != 1.0) ? std::clamp((m.numeric - m.minValue) / range, 0.0, 1.0) : m.numeric;
+      }
+      break;
+    }
+
+    case Type::PowerPluginType: {
+      if (m.powerPlugin) {
+          if (m.dynamicVariables) {
+              m.powerPlugin->loadFrom(skin, name);
+          }
+          m.numeric = m.powerPlugin->numericValue();
+          m.current = m.powerPlugin->stringValue();
+          double range = m.maxValue - m.minValue;
+          m.percent = (range > 0.0) ? std::clamp((m.numeric - m.minValue) / range, 0.0, 1.0) : m.numeric;
+      }
+      break;
+    }
+
+    case Type::InputTextType: {
+      if (m.inputTextPlugin) {
+          if (m.dynamicVariables) {
+              m.inputTextPlugin->loadFrom(skin, name);
+          }
+          m.numeric = m.inputTextPlugin->numericValue();
+          m.current = m.inputTextPlugin->stringValue();
       }
       break;
     }

@@ -5,6 +5,8 @@
 #include <string_view>
 #include <vector>
 #include <array>
+#include <unordered_map>
+#include <filesystem>
 
 #include "nanovg.h"
 #include "utils/ColorParser.hpp"
@@ -31,12 +33,14 @@ public:
   void endFrame();
 
   void clear(const Color &color);
+  void clearRect(double x, double y, double w, double h);
   void fillRect(double x, double y, double w, double h, const Color &color);
   void strokeRect(double x, double y, double w, double h, double lineWidth, const Color &color);
   void drawRectangle(double x, double y, double w, double h, double cornerRadius, const Color &fill, const Color &stroke, double lineWidth);
   void drawEllipse(double x, double y, double w, double h, const Color &fill, const Color &stroke, double lineWidth);
   void drawAdvancedMeter(double x, double y, double w, double h, double radius, double angle_deg, const Color &color);
   void drawLine(double x1, double y1, double x2, double y2, double lineWidth, const Color &color);
+  void drawRoundline(double x, double y, double w, double h, double startAngle, double rotationAngle, double lineLength, double lineStart, const Color &color, bool solid);
 
   struct ImageMetrics {
     bool success = false;
@@ -71,4 +75,11 @@ private:
   NVGcontext* vg_ = nullptr;
   int width_ = 0;
   int height_ = 0;
+
+  struct ImageCacheEntry {
+      int img = 0;
+      std::filesystem::file_time_type mtime;
+      bool hasFailed = false;
+  };
+  std::unordered_map<std::string, ImageCacheEntry> imageCache_;
 };

@@ -83,6 +83,7 @@ void LinuxAudioLevel::loadFrom(const IniLexer& skin, const std::string& section)
         sensitivity_ = std::stod(skin.getOr(section, "Sensitivity", "35.0"));
         
         bandValues_.resize(bands_, 0.0);
+        targetBandValues_.resize(bands_, 0.0);
         
         // Start capture thread
         running_ = true;
@@ -134,7 +135,17 @@ void LinuxAudioLevel::computeFFT(const std::vector<float>& pcm) {
     // 1. Calculate RMS
     double sum = 0;
     for(float v : pcm) sum += v * v;
-    double currentRms = std::sqrt(sum / pcm.size());
+    double rmsLinear = std::sqrt(sum / pcm.size());
+    
+    // Convert to dB
+    double rmsDb = 20.0 * std::log10(rmsLinear + 1e-9);
+    
+    // Dynamic Range Headroom (drop floor, raise ceiling)
+    double floorDb = -80.0;
+    double ceilingDb = 0.0; // Raise ceiling to 0dB
+    
+    double currentRms = (rmsDb - floorDb) / (ceilingDb - floorDb);
+    
     // Apply sensitivity mapping
     currentRms *= (sensitivity_ / 10.0);
     currentRms = std::clamp(currentRms, 0.0, 1.0);
@@ -149,17 +160,40 @@ void LinuxAudioLevel::computeFFT(const std::vector<float>& pcm) {
     
     fft(data);
     
-    // 3. Process into bands
+    // 3. Process into bands (Logarithmic Frequency Binning)
     std::vector<double> currentBands(bands_, 0.0);
     
-    // We only care about the first half of the FFT (positive frequencies)
+    double sampleRate = 44100.0;
+    double minFreq = 20.0;
+    double maxFreq = 16000.0;
+    
+    double logMin = std::log10(minFreq);
+    double logMax = std::log10(maxFreq);
+    
+    std::vector<int> bandBoundaries(bands_ + 1);
+    for(int b = 0; b <= bands_; b++) {
+        double currentLog = logMin + b * (logMax - logMin) / bands_;
+        double currentFreq = std::pow(10.0, currentLog);
+        bandBoundaries[b] = std::max(0, std::min((int)(fftSize_ / 2), (int)std::round(currentFreq * fftSize_ / sampleRate)));
+    }
+    
+    // Ensure monotonically increasing boundaries to prevent empty bands
+    for(int b = 1; b <= bands_; b++) {
+        if(bandBoundaries[b] <= bandBoundaries[b - 1]) {
+            bandBoundaries[b] = bandBoundaries[b - 1] + 1;
+        }
+    }
+    
+    // Cap boundaries to maxBin
     int maxBin = fftSize_ / 2;
-    int binsPerBand = std::max(1, maxBin / bands_);
+    for(int b = 0; b <= bands_; b++) {
+        if(bandBoundaries[b] > maxBin) bandBoundaries[b] = maxBin;
+    }
     
     for(int b = 0; b < bands_; b++) {
         double bandSum = 0;
-        int startBin = b * binsPerBand;
-        int endBin = std::min(maxBin, (b + 1) * binsPerBand);
+        int startBin = bandBoundaries[b];
+        int endBin = bandBoundaries[b + 1];
         int count = 0;
         
         for(int i = startBin; i < endBin; i++) {
@@ -169,37 +203,54 @@ void LinuxAudioLevel::computeFFT(const std::vector<float>& pcm) {
         
         double magnitude = count > 0 ? (bandSum / count) : 0.0;
         
-        // Normalize magnitude (approximate heuristic scaling)
-        magnitude = magnitude * (sensitivity_ / 10.0) * 2.0; 
+        // Normalize linear amplitude by FFT size
+        magnitude = magnitude / (fftSize_ / 2.0);
         
-        currentBands[b] = std::clamp(magnitude, 0.0, 1.0);
+        // Convert to dB for natural dynamic range
+        double db = 20.0 * std::log10(magnitude + 1e-9);
+        double normalized = (db - floorDb) / (ceilingDb - floorDb);
+        
+        // High-Frequency Boosting (Mild progressive multiplier)
+        double freqWeight = 1.0 + (b * 0.15);
+        normalized *= freqWeight;
+        
+        // Apply sensitivity mapping
+        normalized *= (sensitivity_ / 10.0);
+        
+        // Clamp strictly at the end
+        currentBands[b] = std::clamp(normalized, 0.0, 1.0);
     }
     
-    // 4. Apply Attack/Decay
+    // 4. Update Targets safely
     std::lock_guard<std::mutex> lock(dataMutex_);
-    
-    // Smooth RMS
-    if (currentRms > rmsValue_) {
-        rmsValue_ += (currentRms - rmsValue_) * std::clamp(1.0 - (attack_ / 1000.0), 0.1, 1.0);
-    } else {
-        rmsValue_ -= (rmsValue_ - currentRms) * std::clamp(1.0 - (decay_ / 1000.0), 0.1, 1.0);
-    }
-    rmsValue_ = std::clamp(rmsValue_, 0.0, 1.0);
-    
-    // Smooth Bands
+    targetRmsValue_ = currentRms;
     for(int b = 0; b < bands_; b++) {
-        if (currentBands[b] > bandValues_[b]) {
-            bandValues_[b] += (currentBands[b] - bandValues_[b]) * std::clamp(1.0 - (attack_ / 1000.0), 0.1, 1.0);
-        } else {
-            bandValues_[b] -= (bandValues_[b] - currentBands[b]) * std::clamp(1.0 - (decay_ / 1000.0), 0.1, 1.0);
-        }
-        bandValues_[b] = std::clamp(bandValues_[b], 0.0, 1.0);
+        targetBandValues_[b] = currentBands[b];
     }
 }
 
-void LinuxAudioLevel::update() {
+void LinuxAudioLevel::update(double dtMs) {
     if (isParent_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
+        
+        // Exponential dt smoothing for RMS
+        if (targetRmsValue_ > rmsValue_) {
+            rmsValue_ += (targetRmsValue_ - rmsValue_) * (dtMs / std::max(1.0, attack_));
+        } else {
+            rmsValue_ -= (rmsValue_ - targetRmsValue_) * (dtMs / std::max(1.0, decay_));
+        }
+        rmsValue_ = std::clamp(rmsValue_, 0.0, 1.0);
+        
+        // Exponential dt smoothing for Bands
+        for(int b = 0; b < bands_; b++) {
+            if (targetBandValues_[b] > bandValues_[b]) {
+                bandValues_[b] += (targetBandValues_[b] - bandValues_[b]) * (dtMs / std::max(1.0, attack_));
+            } else {
+                bandValues_[b] -= (bandValues_[b] - targetBandValues_[b]) * (dtMs / std::max(1.0, decay_));
+            }
+            bandValues_[b] = std::clamp(bandValues_[b], 0.0, 1.0);
+        }
+        
         currentNumeric_ = rmsValue_;
     } else {
         auto p = parent_.lock();

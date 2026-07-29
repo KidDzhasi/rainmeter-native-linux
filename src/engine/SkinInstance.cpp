@@ -9,6 +9,7 @@
 
 namespace fs = std::filesystem;
 
+#include "evaluator/CommandProcessor.hpp"
 namespace {
 constexpr int kDefaultWidth = 260;
 constexpr int kDefaultHeight = 200;
@@ -131,9 +132,19 @@ std::string SkinInstance::resolveVariables(const IniLexer &skin,
 }
 
 std::string SkinInstance::resolveImagePath(const IniLexer &skin,
+                                          const MeasureEvaluator *measures,
                                           const std::string &section,
                                           const std::string &iniPath) {
-  std::string imageName = skin.getOr(section, "ImageName", "");
+  std::string rawImageName = skin.getOr(section, "ImageName", "");
+  std::string imageName = resolveVariables(skin, measures, section, rawImageName);
+  
+  if (imageName.empty()) {
+      std::string mName = skin.getOr(section, "MeasureName", "");
+      if (!mName.empty() && measures && measures->hasMeasure(mName)) {
+          imageName = measures->value(mName);
+      }
+  }
+
   if (imageName.empty()) {
     return "";
   }
@@ -152,9 +163,10 @@ std::string SkinInstance::resolveImagePath(const IniLexer &skin,
     fs::path tryPath = skinDir / imagePath / imageName;
     if (fs::exists(tryPath))
       return tryPath.string();
-    // Case-insensitive fallback
+    
+    // Case-insensitive fallback: resolve both imagePath and imageName relative to skinDir
     std::string ciPath = IniLexer::resolveCaseInsensitivePath(
-        (skinDir / imagePath).string(), imageName);
+        skinDir.string(), (fs::path(imagePath) / imageName).string());
     if (fs::exists(ciPath))
       return ciPath;
   }
@@ -269,11 +281,11 @@ void SkinInstance::paintScene() {
         measureValues.push_back(measures_.value(mName));
       }
 
+      std::string out;
       const std::string rawTemplate = skin_.getOr(section, "Text", "%1");
-      const std::string textTemplate =
-          resolveVariables(skin_, &measures_, section, rawTemplate);
-      const std::string out =
-          NanoVGRenderer::substituteText(textTemplate, measureValues);
+          const std::string textTemplate =
+              resolveVariables(skin_, &measures_, section, rawTemplate);
+          out = NanoVGRenderer::substituteText(textTemplate, measureValues);
       const double fontSize =
           resolveNum(skin_, *math_, section, "FontSize", 12.0);
 
@@ -293,7 +305,7 @@ void SkinInstance::paintScene() {
       curHeight = (h > 0) ? h : tm.height;
 
     } else if (type == "Image") {
-      const std::string path = resolveImagePath(skin_, section, iniPath_);
+      const std::string path = resolveImagePath(skin_, &measures_, section, iniPath_);
       if (!path.empty()) {
         int preserveAspectRatio = static_cast<int>(
             resolveNum(skin_, *math_, section, "PreserveAspectRatio", 0.0));
@@ -438,6 +450,28 @@ void SkinInstance::paintScene() {
       curWidth = w > 0 ? w : 200;
       curHeight = h > 0 ? h : 12;
       renderer_.drawBar(x, y, curWidth, curHeight, pct, bc, sc, horizontal);
+    } else if (type == "Roundline") {
+      const std::string measureName = skin_.getOr(section, "MeasureName", "");
+      const double pct = measureName.empty() ? 1.0 : measures_.percentValue(measureName);
+
+      double startAngle = resolveNum(skin_, *math_, section, "StartAngle", 0.0);
+      double rotationAngleBase = resolveNum(skin_, *math_, section, "RotationAngle", 0.0);
+      double lineLength = resolveNum(skin_, *math_, section, "LineLength", 0.0);
+      double lineStart = resolveNum(skin_, *math_, section, "LineStart", 0.0);
+      bool solid = resolveNum(skin_, *math_, section, "Solid", 0.0) != 0.0;
+
+      Color lineColor = textColor;
+      const std::string lcRaw = skin_.getOr(section, "LineColor", "");
+      const std::string lcSpec = resolveVariables(skin_, &measures_, section, lcRaw);
+      if (!lcSpec.empty()) {
+        lineColor = Utils::ParseColor(lcSpec);
+      }
+
+      double activeRotation = rotationAngleBase * pct;
+
+      curWidth = w > 0 ? w : lineLength * 2.0;
+      curHeight = h > 0 ? h : lineLength * 2.0;
+      renderer_.drawRoundline(x, y, curWidth, curHeight, startAngle, activeRotation, lineLength, lineStart, lineColor, solid);
     }
 
     renderer_.restore();
@@ -448,6 +482,25 @@ void SkinInstance::paintScene() {
     prevHeight = curHeight;
 
     meterBounds_.push_back({section, x, y, curWidth, curHeight});
+  }
+
+  // Draw InputText overlay if active and belongs to this skin instance
+  if (g_InputState.active && (g_InputState.skinInstance == nullptr || g_InputState.skinInstance == this)) {
+      renderer_.save();
+      
+      // Background box
+      Color sc = Utils::ParseColor(g_InputState.solidColor);
+      renderer_.clearRect(g_InputState.x, g_InputState.y, g_InputState.w, g_InputState.h);
+      renderer_.fillRect(g_InputState.x, g_InputState.y, g_InputState.w, g_InputState.h, sc);
+      
+      // Text
+      std::string out = g_InputState.buffer;
+      if (out.empty()) out = " "; // Prevent empty string issues
+      Color fc = Utils::ParseColor(g_InputState.fontColor);
+      
+      renderer_.drawText(out, g_InputState.x, g_InputState.y, g_InputState.fontFace, g_InputState.fontSize, fc, NanoVGRenderer::TextAlign::Left);
+      
+      renderer_.restore();
   }
 }
 
@@ -499,9 +552,14 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath) {
              it != raw->meterBounds_.rend(); ++it) {
           if (x >= it->x && x <= it->x + it->w && y >= it->y &&
               y <= it->y + it->h) {
-            std::string action =
-                raw->skin_.getOr(it->section, "LeftMouseUpAction", "");
+            auto actionOpt = raw->skin_.getCaseInsensitive(it->section, "LeftMouseUpAction");
+            std::string action = actionOpt ? *actionOpt : "";
             if (!action.empty()) {
+              size_t pos = action.find("$MouseX:%$");
+              if (pos != std::string::npos) {
+                  double percent = ((x - it->x) / it->w) * 100.0;
+                  action.replace(pos, 10, std::to_string(percent));
+              }
               std::cout << "[ENGINE] Hitbox triggered for Meter: "
                         << it->section << std::endl;
               BangResult res = CommandProcessor::execute(action, raw->skin_,
@@ -538,7 +596,15 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath) {
   if (monitorStr.empty()) monitorStr = "0";
   int monitorIndex = static_cast<int>(inst->math_->evaluateOr(monitorStr, 0));
 
-  if (!inst->window_.initLayerSurface(kDefaultWidth, kDefaultHeight, inst->windowX_, inst->windowY_, monitorIndex, anchor, iniPath)) {
+  double targetW = inst->math_->evaluateOr(
+      inst->skin_.getOr("Rainmeter", "SkinWidth", ""), 0);
+  double targetH = inst->math_->evaluateOr(
+      inst->skin_.getOr("Rainmeter", "SkinHeight", ""), 0);
+  
+  int initWidth = targetW > 0 ? static_cast<int>(targetW) : kDefaultWidth;
+  int initHeight = targetH > 0 ? static_cast<int>(targetH) : kDefaultHeight;
+
+  if (!inst->window_.initLayerSurface(initWidth, initHeight, inst->windowX_, inst->windowY_, monitorIndex, anchor, iniPath)) {
     std::cerr << "SkinInstance '" << iniPath
               << "': failed to initialize layer surface.\n";
     return nullptr;
@@ -553,10 +619,19 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath) {
 // Public methods
 // ---------------------------------------------------------------------------
 
-void SkinInstance::Update() {
+void SkinInstance::Update(double dtMs) {
   std::lock_guard<std::mutex> lock(stateMutex_);
-  measures_.evaluate(skin_, [this](const std::string &bang) {
-    BangResult result = CommandProcessor::execute(bang, skin_, measures_);
+  
+  if (!g_InputState.pendingCommand.empty() && (g_InputState.skinInstance == nullptr || g_InputState.skinInstance == this)) {
+      std::string cmd = g_InputState.pendingCommand;
+      g_InputState.pendingCommand.clear();
+      CommandProcessor::execute(cmd, skin_, measures_, this);
+      forceUpdate_ = true;
+      forceRedraw_ = true;
+  }
+
+  measures_.evaluate(skin_, dtMs, [this](const std::string &bang) {
+    BangResult result = CommandProcessor::execute(bang, skin_, measures_, this);
     if (result.needsUpdate)
       forceUpdate_ = true;
     if (result.needsRedraw)

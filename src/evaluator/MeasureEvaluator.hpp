@@ -15,6 +15,8 @@
 #include "ActionTimer.hpp"
 #include "LinuxUsageMonitor.hpp"
 #include "LinuxCoreTemp.hpp"
+#include "LinuxPowerPlugin.hpp"
+#include "InputTextPlugin.hpp"
 #include "LinuxAudioLevel.hpp"
 #include <functional>
 
@@ -37,7 +39,7 @@ public:
   MeasureEvaluator() = default;
 
   void loadFrom(const IniLexer &skin);
-  void evaluate(const IniLexer &skin, std::function<void(const std::string&)> executeBangs = nullptr);
+  void evaluate(const IniLexer &skin, double dtMs, std::function<void(const std::string&)> executeBangs = nullptr);
 
   // String output of a measure (for %1 substitution / display).
   std::string value(std::string_view measureName) const;
@@ -100,6 +102,8 @@ private:
     UsageMonitorType,
     CoreTempType,
     AudioLevelType,
+    PowerPluginType,
+    InputTextType,
   };
 
   struct Measure {
@@ -108,8 +112,12 @@ private:
     std::string drive = "/";       // FreeDiskSpace: mount path
     std::string pluginName;        // Plugin: the requested .dll / plugin name
     std::string current;           // last evaluated string value
-    double numeric = 0.0;          // last evaluated numeric value
+    double numeric = 0.0;          // last evaluated numeric value (visual/interpolated)
+    double targetNumeric = 0.0;    // actual hardware/script target value
     double percent = 0.0;          // last evaluated percentage (0.0 to 1.0)
+    double minValue = 0.0;
+    double maxValue = 1.0;
+    double updateTimer = 1000.0;   // accumulated time since last poll (starts high to force initial fetch)
     sysmeasure::CpuSample prevCpu; // CPU: previous tick sample
     sysmeasure::NetStats prevNet;  // NetIn/NetOut: previous tick sample
     std::string interfaceName;     // NetIn/NetOut: interface name
@@ -129,6 +137,8 @@ private:
     std::shared_ptr<LinuxUsageMonitor> usageMonitor; // UsageMonitor adapter
     std::shared_ptr<LinuxCoreTemp> coreTemp;   // CoreTemp adapter
     std::shared_ptr<LinuxAudioLevel> audioLevel; // AudioLevel adapter
+    std::shared_ptr<LinuxPowerPlugin> powerPlugin;
+    std::shared_ptr<InputTextPlugin> inputTextPlugin;
     
     bool dynamicVariables = false; // re-evaluate format/drive/pluginName/formula
   };

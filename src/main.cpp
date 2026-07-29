@@ -129,7 +129,7 @@ int main(int argc, char **argv) {
   }
 
   std::cout << "Presenting " << manager.ActiveCount()
-            << " skin(s) on the desktop. Updating every 1000ms. "
+            << " skin(s) on the desktop. Updating continuously. "
                "Ctrl+C to exit.\n";
 
   // -----------------------------------------------------------------------
@@ -148,13 +148,13 @@ int main(int argc, char **argv) {
               .count();
       lastFrameTime = now;
 
+      manager.UpdateAll(dt);
       manager.RenderAll(dt);
 
       std::this_thread::sleep_until(now + frameDuration);
     }
   });
 
-  auto nextTick = std::chrono::steady_clock::now() + kTickInterval;
   auto lastLoopTime = std::chrono::steady_clock::now();
 
   while (manager.ActiveCount() > 0) {
@@ -163,15 +163,6 @@ int main(int argc, char **argv) {
     lastLoopTime = now;
 
     manager.UpdateAnimations(dtMs);
-
-    if (now >= nextTick) {
-      nextTick = now + kTickInterval;
-      // Force an update pass for every skin on the tick boundary.
-      // SkinManager::UpdateAll only updates skins that report NeedsUpdate(),
-      // but on a tick boundary every skin should be updated. We call Update()
-      // on each skin unconditionally by going through the manager.
-      manager.UpdateAll(1000);
-    }
 
     if (!manager.HandleGlobalEvents()) {
       break;

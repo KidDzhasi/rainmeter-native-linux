@@ -1,3 +1,11 @@
+#include <functional>
+#ifndef GLOBAL_STATE_FIX
+#define GLOBAL_STATE_FIX
+#include <string>
+#include "evaluator/CommandProcessor.hpp"
+std::function<void()> g_RequestKeyboardFocus;
+std::function<void()> g_ReleaseKeyboardFocus;
+#endif
 #include "LayerShell.hpp"
 
 #include <cstring>
@@ -73,6 +81,70 @@ void pointerFrame(void * /*data*/, wl_pointer * /*pointer*/) {}
 void pointerAxisSource(void * /*data*/, wl_pointer * /*pointer*/, uint32_t /*axis_source*/) {}
 void pointerAxisStop(void * /*data*/, wl_pointer * /*pointer*/, uint32_t /*time*/, uint32_t /*axis*/) {}
 void pointerAxisDiscrete(void * /*data*/, wl_pointer * /*pointer*/, uint32_t /*axis*/, int32_t /*discrete*/) {}
+
+
+// --- NATIVE KEYBOARD INPUT STUBS ---
+#ifndef IOSTREAM_INCLUDED
+#define IOSTREAM_INCLUDED
+#include <iostream>
+#endif
+
+#include <linux/input-event-codes.h>
+
+
+
+
+// Lightweight translator for raw Wayland hardware keys
+char getCharFromKey(uint32_t key) {
+    if (key >= KEY_1 && key <= KEY_9) return '1' + (key - KEY_1);
+    if (key == KEY_0) return '0';
+    if (key >= KEY_Q && key <= KEY_P) return "qwertyuiop"[key - KEY_Q];
+    if (key >= KEY_A && key <= KEY_L) return "asdfghjkl"[key - KEY_A];
+    if (key >= KEY_Z && key <= KEY_M) return "zxcvbnm"[key - KEY_Z];
+    if (key == KEY_SPACE) return ' ';
+    return 0;
+}
+
+void keyboardKeymap(void *data, wl_keyboard *keyboard, uint32_t format, int32_t fd, uint32_t size) {}
+void keyboardEnter(void *data, wl_keyboard *keyboard, uint32_t serial, wl_surface *surface, wl_array *keys) {}
+void keyboardLeave(void *data, wl_keyboard *keyboard, uint32_t serial, wl_surface *surface) {}
+void keyboardKey(void *data, wl_keyboard *keyboard, uint32_t serial, uint32_t time, uint32_t key, uint32_t state) {
+    if (state == 1 && g_InputState.active) { 
+        if (key == KEY_BACKSPACE && !g_InputState.buffer.empty()) {
+            g_InputState.buffer.pop_back();
+        } else if (key == KEY_ESC) {
+            g_InputState.buffer = "";
+            g_InputState.active = false;
+            if (g_ReleaseKeyboardFocus) g_ReleaseKeyboardFocus();
+        } else if (key == KEY_ENTER) {
+            std::string cmd = g_InputState.command;
+            size_t pos = cmd.find("$UserInput$");
+            if (pos != std::string::npos) {
+                cmd.replace(pos, 11, g_InputState.buffer);
+            }
+            g_InputState.pendingCommand = cmd;
+            g_InputState.buffer = "";
+            g_InputState.active = false;
+            if (g_ReleaseKeyboardFocus) g_ReleaseKeyboardFocus();
+        } else {
+            char c = getCharFromKey(key);
+            if (c != 0) g_InputState.buffer += c;
+        }
+        std::cout << "[TYPING] Live Buffer: " << g_InputState.buffer << std::endl;
+    }
+}
+void keyboardModifiers(void *data, wl_keyboard *keyboard, uint32_t serial, uint32_t mods_dep, uint32_t mods_lat, uint32_t mods_lock, uint32_t group) {}
+void keyboardRepeatInfo(void *data, wl_keyboard *keyboard, int32_t rate, int32_t delay) {}
+
+const wl_keyboard_listener kKeyboardListener = {
+    .keymap = keyboardKeymap,
+    .enter = keyboardEnter,
+    .leave = keyboardLeave,
+    .key = keyboardKey,
+    .modifiers = keyboardModifiers,
+    .repeat_info = keyboardRepeatInfo,
+};
+// -----------------------------------
 
 const wl_pointer_listener kPointerListener = {
     .enter = pointerEnter,
@@ -159,6 +231,23 @@ bool LayerShellWindow::initLayerSurface(int width, int height, int windowX, int 
                                      this);
   zwlr_layer_surface_v1_set_size(layerSurface_, static_cast<uint32_t>(width),
                                  static_cast<uint32_t>(height));
+  g_RequestKeyboardFocus = [this]() {
+      if (layerSurface_ && surface_) {
+          // Force Wayland to elevate the widget and grant keyboard focus!
+          zwlr_layer_surface_v1_set_keyboard_interactivity(layerSurface_, 1);
+          // Stay on bottom layer
+          wl_surface_commit(surface_);
+      }
+  };
+  g_ReleaseKeyboardFocus = [this]() {
+      if (layerSurface_ && surface_) {
+          // Drop the widget back to the background layer safely
+          zwlr_layer_surface_v1_set_keyboard_interactivity(layerSurface_, 0);
+          // Stay on bottom layer
+          wl_surface_commit(surface_);
+      }
+  };
+
   
   if (anchor == 0 && scope == "rainmeter-native") { // fallback for old calls if any, though SkinInstance will pass explicit anchors
       anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
@@ -269,6 +358,15 @@ void LayerShellWindow::handleSeatCapabilities(wl_seat *seat, uint32_t caps) {
   } else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && pointer_ != nullptr) {
     wl_pointer_release(pointer_);
     pointer_ = nullptr;
+  }
+
+  static wl_keyboard *local_keyboard_ = nullptr;
+  if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && local_keyboard_ == nullptr) {
+    local_keyboard_ = wl_seat_get_keyboard(seat);
+    wl_keyboard_add_listener(local_keyboard_, &kKeyboardListener, this);
+  } else if (!(caps & WL_SEAT_CAPABILITY_KEYBOARD) && local_keyboard_ != nullptr) {
+    wl_keyboard_release(local_keyboard_);
+    local_keyboard_ = nullptr;
   }
 }
 

@@ -44,7 +44,7 @@ public:
 
   // Per-tick measure evaluation. Calls CommandProcessor as needed.
   // Called from the main thread every tick interval.
-  void Update();
+  void Update(double dtMs);
 
   // Per-frame render. Must be called from the render thread.
   // Paints the scene, calculates auto-size, and swaps buffers.
@@ -87,6 +87,7 @@ private:
                                       const std::string &section,
                                       const std::string &text);
   static std::string resolveImagePath(const IniLexer &skin,
+                                      const MeasureEvaluator *measures,
                                       const std::string &section,
                                       const std::string &iniPath);
 

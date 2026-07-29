@@ -27,7 +27,7 @@ public:
 
   // Per-tick: evaluates all measures and sets redraw flags.
   // Called from the main thread every tick interval.
-  void UpdateAll(uint32_t deltaTimeMs);
+  void UpdateAll(double dtMs);
 
   // Per-frame: renders all skins that need a redraw.
   // Must be called from the render thread.

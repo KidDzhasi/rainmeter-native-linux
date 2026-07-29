@@ -12,14 +12,14 @@ bool SkinManager::LoadSkin(const std::string &iniPath) {
   return true;
 }
 
-void SkinManager::UpdateAll(uint32_t /*deltaTimeMs*/) {
+void SkinManager::UpdateAll(double dtMs) {
   for (auto &skin : skins_) {
     if (!skin->IsActive())
       continue;
     // On a tick boundary every skin is evaluated unconditionally,
     // matching the original behaviour where doTick || forceUpdate
     // was always true at the tick boundary.
-    skin->Update();
+    skin->Update(dtMs);
   }
 }
 
@@ -50,7 +50,7 @@ bool SkinManager::HandleGlobalEvents() {
 
     // Process inter-tick forced updates (e.g. from mouse-click bangs).
     if (skin.NeedsUpdate()) {
-      skin.Update();
+      skin.Update(0.0);
     }
 
     if (skin.DispatchEvents()) {

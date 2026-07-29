@@ -85,6 +85,7 @@ add_executable(rainmeter-native
     ${RAINMETER_NATIVE_SOURCES}
     src/evaluator/LinuxUsageMonitor.cpp
     src/evaluator/LinuxCoreTemp.cpp
+    src/evaluator/LinuxPowerPlugin.cpp
     src/evaluator/LinuxAudioLevel.cpp
     ${nanovg_SOURCE_DIR}/src/nanovg.c
     ${LAYER_SHELL_SOURCE}

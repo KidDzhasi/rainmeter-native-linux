@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <unordered_map>
 #include <algorithm>
+#include "stb_image.h"
+
 #include <iostream>
 #include <cmath>
 
@@ -29,6 +31,7 @@ void NanoVGRenderer::reset() {
         nvgDeleteGL3(vg_);
         vg_ = nullptr;
     }
+    imageCache_.clear();
     width_ = 0;
     height_ = 0;
 }
@@ -90,6 +93,17 @@ void NanoVGRenderer::clear(const Color &color) {
                  (static_cast<float>(color.b) / 255.0f) * a,
                  a);
     glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+}
+
+void NanoVGRenderer::clearRect(double x, double y, double w, double h) {
+    if (!valid()) return;
+    nvgSave(vg_);
+    nvgGlobalCompositeOperation(vg_, NVG_COPY);
+    nvgBeginPath(vg_);
+    nvgRect(vg_, x, y, w, h);
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 0));
+    nvgFill(vg_);
+    nvgRestore(vg_);
 }
 
 void NanoVGRenderer::fillRect(double x, double y, double w, double h, const Color &color) {
@@ -188,19 +202,118 @@ void NanoVGRenderer::drawLine(double x1, double y1, double x2, double y2, double
     nvgStroke(vg_);
 }
 
-static std::unordered_map<std::string, int> s_imageCache;
+void NanoVGRenderer::drawRoundline(double x, double y, double w, double h, double startAngle, double rotationAngle, double lineLength, double lineStart, const Color &color, bool solid) {
+    if (!valid()) return;
+
+    double cx = w / 2.0;
+    double cy = h / 2.0;
+    double radius = lineLength != 0.0 ? lineLength : (std::min(w, h) / 2.0);
+
+    nvgSave(vg_);
+    nvgTranslate(vg_, x, y);
+
+    nvgBeginPath(vg_);
+
+    if (solid) {
+        int dir = rotationAngle >= 0 ? NVG_CW : NVG_CCW;
+        nvgArc(vg_, cx, cy, radius, startAngle, startAngle + rotationAngle, dir);
+        
+        if (lineStart > 0.0) {
+            int oppDir = rotationAngle >= 0 ? NVG_CCW : NVG_CW;
+            nvgLineTo(vg_, cx + std::cos(startAngle + rotationAngle) * lineStart, cy + std::sin(startAngle + rotationAngle) * lineStart);
+            nvgArc(vg_, cx, cy, lineStart, startAngle + rotationAngle, startAngle, oppDir);
+        } else {
+            nvgLineTo(vg_, cx, cy);
+        }
+        
+        nvgClosePath(vg_);
+        nvgFillColor(vg_, toNVGColor(color));
+        nvgFill(vg_);
+    } else {
+        double currentAngle = startAngle + rotationAngle;
+        double x1 = cx + std::cos(currentAngle) * lineStart;
+        double y1 = cy + std::sin(currentAngle) * lineStart;
+        double x2 = cx + std::cos(currentAngle) * radius;
+        double y2 = cy + std::sin(currentAngle) * radius;
+        
+        nvgMoveTo(vg_, x1, y1);
+        nvgLineTo(vg_, x2, y2);
+        
+        nvgStrokeColor(vg_, toNVGColor(color));
+        nvgStrokeWidth(vg_, 1.0f);
+        nvgStroke(vg_);
+    }
+
+    nvgRestore(vg_);
+}
 
 NanoVGRenderer::ImageMetrics NanoVGRenderer::drawImage(const std::string &path, double x, double y, double w, double h, int preserveAspectRatio) {
     if (!valid()) return {};
 
+    auto trimPath = [](const std::string& s) {
+        size_t start = s.find_first_not_of(" \t\r\n\v\f");
+        if (start == std::string::npos) return std::string();
+        size_t end = s.find_last_not_of(" \t\r\n\v\f");
+        return s.substr(start, end - start + 1);
+    };
+    std::string cleanPath = trimPath(path);
+
+    std::error_code ec;
+    auto current_mtime = std::filesystem::last_write_time(cleanPath, ec);
+    if (ec) return {}; // file doesn't exist
+
     int img = 0;
-    auto it = s_imageCache.find(path);
-    if (it != s_imageCache.end()) {
-        img = it->second;
+    auto it = imageCache_.find(cleanPath);
+    if (it != imageCache_.end()) {
+        if (it->second.mtime != current_mtime) {
+            std::cout << "[ImageMeter] Hot-reloading via stbi: [" << cleanPath << "]" << std::endl;
+            if (it->second.img != 0) {
+                nvgDeleteImage(vg_, it->second.img);
+                it->second.img = 0;
+            }
+            it->second.hasFailed = false;
+            
+            int w, h, n;
+            unsigned char *data = stbi_load(cleanPath.c_str(), &w, &h, &n, 4);
+            if (!data) {
+                std::cerr << "[ImageMeter] stbi_load failed for [" << cleanPath << "]: " << stbi_failure_reason() << std::endl;
+                it->second.hasFailed = true;
+                it->second.mtime = current_mtime;
+                return {};
+            }
+            it->second.img = nvgCreateImageRGBA(vg_, w, h, 0, data);
+            stbi_image_free(data);
+
+            if (it->second.img == 0) {
+                std::cerr << "[ImageMeter] Failed to push RGBA to NanoVG: [" << cleanPath << "]" << std::endl;
+                it->second.hasFailed = true;
+                it->second.mtime = current_mtime;
+                return {};
+            }
+            it->second.mtime = current_mtime;
+        } else if (it->second.hasFailed) {
+            return {};
+        }
+        img = it->second.img;
     } else {
-        img = nvgCreateImage(vg_, path.c_str(), 0);
-        if (img == 0) return {};
-        s_imageCache[path] = img;
+        std::cout << "[ImageMeter] Attempting stbi_load: [" << cleanPath << "]" << std::endl;
+        
+        int w, h, n;
+        unsigned char *data = stbi_load(cleanPath.c_str(), &w, &h, &n, 4);
+        if (!data) {
+            std::cerr << "[ImageMeter] stbi_load failed for [" << cleanPath << "]: " << stbi_failure_reason() << std::endl;
+            imageCache_[cleanPath] = {0, current_mtime, true};
+            return {};
+        }
+        img = nvgCreateImageRGBA(vg_, w, h, 0, data);
+        stbi_image_free(data);
+
+        if (img == 0) {
+            std::cerr << "[ImageMeter] Failed to push RGBA to NanoVG: [" << cleanPath << "]" << std::endl;
+            imageCache_[cleanPath] = {0, current_mtime, true};
+            return {};
+        }
+        imageCache_[cleanPath] = {img, current_mtime, false};
     }
 
     int iw = 0, ih = 0;
@@ -304,13 +417,30 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
 
     nvgTextAlign(vg_, nvgAlign);
 
+    std::string textToDraw = text;
+    auto replaceAll = [](std::string& str, const std::string& from, const std::string& to) {
+        size_t start_pos = 0;
+        while((start_pos = str.find(from, start_pos)) != std::string::npos) {
+            str.replace(start_pos, from.length(), to);
+            start_pos += to.length();
+        }
+    };
+    replaceAll(textToDraw, "⏮", "<<");
+    replaceAll(textToDraw, "⏭", ">>");
+    replaceAll(textToDraw, "♥", "+");
+    replaceAll(textToDraw, "♡", "+");
+    replaceAll(textToDraw, "⏸", "||");
+    replaceAll(textToDraw, "▶", ">");
+    replaceAll(textToDraw, "⏵", ">");
+    replaceAll(textToDraw, "■", "[]");
+
     float bounds[4];
-    nvgTextBounds(vg_, x, y, text.c_str(), nullptr, bounds);
+    nvgTextBounds(vg_, x, y, textToDraw.c_str(), nullptr, bounds);
     
     metrics.width = bounds[2] - bounds[0];
     metrics.height = bounds[3] - bounds[1];
 
-    nvgText(vg_, x, y, text.c_str(), nullptr);
+    nvgText(vg_, x, y, textToDraw.c_str(), nullptr);
     
     return metrics;
 }

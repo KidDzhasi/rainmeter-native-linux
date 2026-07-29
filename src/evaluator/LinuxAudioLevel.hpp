@@ -17,7 +17,7 @@ public:
     ~LinuxAudioLevel();
 
     void loadFrom(const IniLexer& skin, const std::string& section);
-    void update();
+    void update(double dtMs);
 
     double numericValue() const;
     std::string stringValue() const;
@@ -49,7 +49,9 @@ private:
     
     // Audio backend (Parent only)
     std::vector<double> bandValues_;
+    std::vector<double> targetBandValues_;
     double rmsValue_ = 0.0;
+    double targetRmsValue_ = 0.0;
     
     pa_simple* pa_ = nullptr;
     std::thread captureThread_;

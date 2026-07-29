@@ -12,6 +12,8 @@ struct TrackInfo {
   std::string coverUrl;
   int state = 0; // 0 = stopped, 1 = playing, 2 = paused
   double progress = 0.0;
+  double position = 0.0;
+  double duration = 0.0;
   std::string activePlayer;
 };
 
