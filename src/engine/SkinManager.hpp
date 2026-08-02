@@ -23,7 +23,7 @@ public:
 
   // Load a single skin from an INI path. Returns false on failure
   // (bad path, compositor unavailable, etc.).
-  bool LoadSkin(const std::string &iniPath);
+  bool LoadSkin(const std::string &iniPath, int overrideMonitor = -1);
 
   // Per-tick: evaluates all measures and sets redraw flags.
   // Called from the main thread every tick interval.

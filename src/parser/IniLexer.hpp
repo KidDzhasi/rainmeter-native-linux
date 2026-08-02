@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "EnvironmentManager.hpp"
 
@@ -29,9 +30,9 @@ public:
   explicit IniLexer(const std::string &filePath);
 
   // Loads and parses the file at the given path. Returns true on success,
-  // false if the file could not be opened. Re-parsing clears prior data.
+  // false if the file could not be opened. By default, clears prior data.
   // Handles UTF-16 LE (BOM) input and resolves the skin's @Resources path.
-  bool parseFile(const std::string &filePath);
+  bool parseFile(const std::string &filePath, bool clear = true);
 
   // Parses INI content already held in memory. Returns true on success.
   // Note: #@# / @include resolution requires a known skin path; use
@@ -58,11 +59,18 @@ public:
   std::string getOr(std::string_view section, std::string_view key,
                     std::string_view fallback) const;
 
+  // Writes a key-value pair directly to the specified INI/INC file on disk.
+  // Overwrites the existing key if present, or appends it to the section.
+  static bool writeKeyValue(const std::string& filePath, const std::string& section, const std::string& key, const std::string& value);
+
   // True if the given section exists.
   bool hasSection(std::string_view section) const;
 
   // Access to the complete parsed data structure.
   const DataMap &data() const noexcept { return data_; }
+
+  // Access to the list of sections in the order they were parsed (Z-Order).
+  const std::vector<std::string>& sectionOrder() const noexcept { return sectionOrder_; }
 
   const EnvironmentManager &environment() const noexcept { return builtins_; }
 
@@ -95,8 +103,8 @@ private:
   // Trims leading/trailing ASCII whitespace from a view.
   static std::string_view trim(std::string_view sv);
 
-  // Converts a UTF-16 LE byte buffer (BOM already stripped) to UTF-8.
-  static std::string utf16leToUtf8(const char *bytes, std::size_t byteCount);
+  // Converts a UTF-16 byte buffer (BOM already stripped) to UTF-8.
+  static std::string utf16ToUtf8(const char *bytes, std::size_t byteCount, bool bigEndian);
 
   // Determines the @Resources/ directory for a skin file path.
   static std::string computeResourcesPath(const std::string &skinFilePath);
@@ -108,6 +116,7 @@ private:
                     int depth, const std::string& initialSection = "");
 
   DataMap data_;
+  std::vector<std::string> sectionOrder_;
   std::string resourcesPath_;
   EnvironmentManager builtins_;
 };

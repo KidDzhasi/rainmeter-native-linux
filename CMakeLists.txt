@@ -80,11 +80,13 @@ FetchContent_Populate(glm)
 # --- Collect all sources under src/ ---
 file(GLOB_RECURSE RAINMETER_NATIVE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+list(REMOVE_ITEM RAINMETER_NATIVE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/tools/rmskin_unpacker.cpp")
 
 add_executable(rainmeter-native
     ${RAINMETER_NATIVE_SOURCES}
-    src/evaluator/LinuxUsageMonitor.cpp
-    src/evaluator/LinuxCoreTemp.cpp
+    src/evaluator/ScriptEnvironment.cpp
+    src/evaluator/SysfsParser.cpp
+    src/wayland/LayerShell.cpp
     src/evaluator/LinuxPowerPlugin.cpp
     src/evaluator/LinuxAudioLevel.cpp
     ${nanovg_SOURCE_DIR}/src/nanovg.c
@@ -142,3 +144,10 @@ target_link_libraries(rainmeter-native PRIVATE
     ${PULSE_LIBRARIES}
     Threads::Threads
     rt)
+
+# --- RMSKIN Unpacker Utility ---
+add_executable(rmskin-unpacker 
+    src/tools/rmskin_unpacker.cpp
+    src/parser/IniLexer.cpp
+    src/parser/EnvironmentManager.cpp)
+target_compile_options(rmskin-unpacker PRIVATE -Wall -Wextra)

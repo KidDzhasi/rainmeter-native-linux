@@ -126,6 +126,51 @@ bool MathParser::evalArithmetic(const std::string &expr, double &out) {
       continue;
     }
 
+    if (std::isalpha(static_cast<unsigned char>(c))) {
+      std::string funcName;
+      while (i < expr.size() && std::isalpha(static_cast<unsigned char>(expr[i]))) {
+        funcName += std::tolower(expr[i]);
+        ++i;
+      }
+      
+      // Skip whitespace before '('
+      while (i < expr.size() && std::isspace(static_cast<unsigned char>(expr[i]))) {
+          ++i;
+      }
+      
+      if (i < expr.size() && expr[i] == '(') {
+        int depth = 1;
+        std::size_t j = i + 1;
+        while (j < expr.size() && depth > 0) {
+          if (expr[j] == '(') ++depth;
+          else if (expr[j] == ')') --depth;
+          ++j;
+        }
+        if (depth == 0) {
+          std::string innerExpr = expr.substr(i + 1, j - i - 2);
+          double innerVal = 0.0;
+          if (!evalArithmetic(innerExpr, innerVal)) return false;
+          
+          if (funcName == "rad") {
+            values.push(innerVal * M_PI / 180.0);
+          } else if (funcName == "deg") {
+            values.push(innerVal * 180.0 / M_PI);
+          } else if (funcName == "cos") {
+            values.push(std::cos(innerVal));
+          } else if (funcName == "sin") {
+            values.push(std::sin(innerVal));
+          } else {
+            return false; // unknown function
+          }
+          
+          i = j;
+          expectOperand = false;
+          continue;
+        }
+      }
+      return false; // syntax error
+    }
+
     if (c == '(') {
       ops.push(c);
       expectOperand = true;

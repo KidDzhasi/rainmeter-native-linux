@@ -69,6 +69,9 @@ public:
   bool closed() const noexcept { return closed_; }
   int width() const noexcept { return width_; }
   int height() const noexcept { return height_; }
+  
+  int getScreenWidth(int monitorIndex) const noexcept;
+  int getScreenHeight(int monitorIndex) const noexcept;
 
   // --- Registry / listener plumbing (public so the C trampolines in the
   //     implementation can reach members; not part of the intended API). ---
@@ -84,6 +87,8 @@ public:
   void handlePointerMotion(double x, double y);
   void handlePointerButton(uint32_t button, uint32_t state);
 
+  void handleOutputMode(wl_output *output, uint32_t flags, int width, int height);
+
 private:
   void disconnect();
   bool initEGL();
@@ -94,7 +99,13 @@ private:
   zwlr_layer_shell_v1 *layerShell_ = nullptr;
   wl_seat *seat_ = nullptr;
   wl_pointer *pointer_ = nullptr;
-  std::vector<wl_output *> outputs_;
+  
+  struct OutputInfo {
+      wl_output *output;
+      int width = 0;
+      int height = 0;
+  };
+  std::vector<OutputInfo> outputs_;
 
   wl_surface *surface_ = nullptr;
   zwlr_layer_surface_v1 *layerSurface_ = nullptr;

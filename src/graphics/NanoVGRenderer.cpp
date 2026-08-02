@@ -37,11 +37,12 @@ void NanoVGRenderer::reset() {
 }
 
 NVGcolor NanoVGRenderer::toNVGColor(const Color& c) const {
-    float a = static_cast<float>(c.a) / 255.0f;
-    float r = (static_cast<float>(c.r) / 255.0f) * a;
-    float g = (static_cast<float>(c.g) / 255.0f) * a;
-    float b = (static_cast<float>(c.b) / 255.0f) * a;
-    return nvgRGBAf(r, g, b, a);
+    return nvgRGBA(
+        static_cast<unsigned char>(c.r),
+        static_cast<unsigned char>(c.g),
+        static_cast<unsigned char>(c.b),
+        static_cast<unsigned char>(c.a)
+    );
 }
 
 bool NanoVGRenderer::beginEGL(int width, int height) {
@@ -322,6 +323,7 @@ NanoVGRenderer::ImageMetrics NanoVGRenderer::drawImage(const std::string &path, 
     double finalW = (w > 0) ? w : iw;
     double finalH = (h > 0) ? h : ih;
 
+    // 1. Save the global state
     nvgSave(vg_);
 
     if (w > 0 && h > 0 && iw > 0 && ih > 0) {
@@ -343,12 +345,14 @@ NanoVGRenderer::ImageMetrics NanoVGRenderer::drawImage(const std::string &path, 
             double drawY = y + (h - drawH) / 2.0;
 
             if (preserveAspectRatio == 2) {
-                nvgIntersectScissor(vg_, x, y, w, h);
+                // 2. Apply the bounding box mask based on the INI W and H variables
+                nvgScissor(vg_, x, y, w, h);
             }
             imgPaint = nvgImagePattern(vg_, drawX, drawY, drawW, drawH, 0.0f, img, 1.0f);
             nvgBeginPath(vg_);
             nvgRect(vg_, drawX, drawY, drawW, drawH);
             nvgFillPaint(vg_, imgPaint);
+            // 3. Draw the meter (nvgText or nvgImagePattern/nvgFill)
             nvgFill(vg_);
         }
     } else if (w > 0 && iw > 0 && h <= 0) {
@@ -375,6 +379,7 @@ NanoVGRenderer::ImageMetrics NanoVGRenderer::drawImage(const std::string &path, 
         nvgFill(vg_);
     }
 
+    // 4. Immediately restore the state
     nvgRestore(vg_);
     
     return {true, finalW, finalH};
@@ -394,10 +399,13 @@ void NanoVGRenderer::drawBar(double x, double y, double w, double h, double perc
     }
 }
 
-NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, double x, double y, const std::string &fontFace, double fontSize, const Color &color, TextAlign align) {
+NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, double x, double y, const std::string &fontFace, double fontSize, const Color &color, TextAlign align, double angle, const TextEffect* effect, double maxWidth, double maxHeight, int clipString) {
     TextMetrics metrics;
     if (!valid()) return metrics;
 
+    // ---------------------------------------------------------------
+    // STEP 1: Font Setup — must happen before any measurement.
+    // ---------------------------------------------------------------
     std::string searchFace = toLowerString(fontFace);
     std::string resolvedFace = "sans";
     auto it = s_fontFamilyMap.find(searchFace);
@@ -405,9 +413,13 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
         resolvedFace = it->second;
     }
 
-    nvgFontSize(vg_, fontSize);
+    // Rainmeter specifies FontSize in typographic points; NanoVG expects
+    // pixels.  Convert using the standard 96-DPI factor (pt * 96/72).
+    float pixelSize = static_cast<float>(fontSize) * (96.0f / 72.0f);
+    if (pixelSize < 1.0f) pixelSize = 1.0f;
+
     nvgFontFace(vg_, resolvedFace.c_str());
-    nvgFillColor(vg_, toNVGColor(color));
+    nvgFontSize(vg_, pixelSize);
 
     int nvgAlign = NVG_ALIGN_TOP;
     if (align == TextAlign::Left) nvgAlign |= NVG_ALIGN_LEFT;
@@ -417,6 +429,9 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
 
     nvgTextAlign(vg_, nvgAlign);
 
+    // ---------------------------------------------------------------
+    // STEP 2: Sanitise the display string.
+    // ---------------------------------------------------------------
     std::string textToDraw = text;
     auto replaceAll = [](std::string& str, const std::string& from, const std::string& to) {
         size_t start_pos = 0;
@@ -434,14 +449,152 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
     replaceAll(textToDraw, "⏵", ">");
     replaceAll(textToDraw, "■", "[]");
 
-    float bounds[4];
-    nvgTextBounds(vg_, x, y, textToDraw.c_str(), nullptr, bounds);
-    
-    metrics.width = bounds[2] - bounds[0];
-    metrics.height = bounds[3] - bounds[1];
+    // ---------------------------------------------------------------
+    // STEP 3: Truncate if ClipString=1
+    // ---------------------------------------------------------------
+    if (clipString == 1 && maxWidth > 0) {
+        float bounds[4] = {0};
+        nvgTextBounds(vg_, 0.0f, 0.0f, textToDraw.c_str(), nullptr, bounds);
+        if (bounds[2] - bounds[0] > maxWidth) {
+            std::string ellipsis = "...";
+            while (!textToDraw.empty()) {
+                // Pop one UTF-8 character
+                while (!textToDraw.empty()) {
+                    unsigned char c = textToDraw.back();
+                    textToDraw.pop_back();
+                    if ((c & 0xC0) != 0x80) break;
+                }
+                std::string tryText = textToDraw + ellipsis;
+                nvgTextBounds(vg_, 0.0f, 0.0f, tryText.c_str(), nullptr, bounds);
+                if (bounds[2] - bounds[0] <= maxWidth) {
+                    textToDraw = tryText;
+                    break;
+                }
+            }
+            if (textToDraw.empty()) textToDraw = ellipsis;
+        }
+    }
 
-    nvgText(vg_, x, y, textToDraw.c_str(), nullptr);
+    // ---------------------------------------------------------------
+    // STEP 4: Measure the string locally at (0, 0).
+    // ---------------------------------------------------------------
+    float bounds[4] = {0, 0, 0, 0};
+    nvgSave(vg_);
+        if (clipString == 2 && maxWidth > 0) {
+        nvgTextBoxBounds(vg_, 0.0f, 0.0f, maxWidth, textToDraw.c_str(), nullptr, bounds);
+    } else {
+        nvgTextBounds(vg_, 0.0f, 0.0f, textToDraw.c_str(), nullptr, bounds);
+    }
+
+    float measuredW = bounds[2] - bounds[0];
+    float measuredH = bounds[3] - bounds[1];
+
+    if (measuredW < 1.0f) measuredW = pixelSize * static_cast<float>(textToDraw.size());
+    if (measuredH < 1.0f) measuredH = pixelSize;
+    if (clipString == 2 && maxHeight > 0 && measuredH > maxHeight) measuredH = maxHeight;
+
+    metrics.width  = measuredW;
+    metrics.height = measuredH;
+
+    // Helper lambda for the shadow pass (since it needs an offset from the layout)
+    auto renderShadowPass = [&](float offset_x, float offset_y) {
+        // 1. Save the global state
+        nvgSave(vg_);
+        nvgTranslate(vg_, static_cast<float>(x) + offset_x, static_cast<float>(y) + offset_y);
+        if (angle != 0.0) nvgRotate(vg_, static_cast<float>(angle));
+        
+        nvgSave(vg_);
+        if (clipString == 2 && maxWidth > 0) {
+            if (maxHeight > 0) {
+                // 2. Apply the bounding box mask based on the INI W and H variables
+                nvgScissor(vg_, 0, 0, maxWidth, maxHeight);
+            }
+            // 3. Draw the meter (nvgText or nvgImagePattern/nvgFill)
+            nvgTextBox(vg_, 0, 0, maxWidth, textToDraw.c_str(), nullptr);
+        } else {
+            // 3. Draw the meter (nvgText or nvgImagePattern/nvgFill)
+            nvgText(vg_, 0, 0, textToDraw.c_str(), nullptr);
+        }
+        
+        // 4. Immediately restore the state
+        nvgRestore(vg_);
+    };
+
+    if (effect && effect->shadowEnabled) {
+        nvgSave(vg_);
+        nvgFontBlur(vg_, effect->shadowBlur);
+        nvgFillColor(vg_, toNVGColor(effect->shadowColor));
+        renderShadowPass(static_cast<float>(effect->shadowX), static_cast<float>(effect->shadowY));
+        nvgRestore(vg_);
+    }
+
+    // ---------------------------------------------------------------
+    // STEP 4 & 5: Translate first, build local paint, and draw.
+    // ---------------------------------------------------------------
+    // 1. Save the global state
+    nvgSave(vg_);
+    nvgTranslate(vg_, static_cast<float>(x), static_cast<float>(y));
+    if (angle != 0.0) nvgRotate(vg_, static_cast<float>(angle));
+
+    nvgBeginPath(vg_);
+
+    if (effect && effect->gradientEnabled) {
+        float cx = (bounds[0] + bounds[2]) * 0.5f;
+        float cy = (bounds[1] + bounds[3]) * 0.5f;
+
+        float angle_rad = effect->gradientAngle * (M_PI / 180.0f);
+
+        float L = std::abs(measuredW * std::cos(angle_rad)) + std::abs(measuredH * std::sin(angle_rad));
+        if (L < 1.0f) L = std::max(measuredW, measuredH);
+
+        float sx = cx - (L * 0.5f) * std::cos(angle_rad);
+        float sy = cy - (L * 0.5f) * std::sin(angle_rad);
+        float ex = cx + (L * 0.5f) * std::cos(angle_rad);
+        float ey = cy + (L * 0.5f) * std::sin(angle_rad);
+        
+        if (effect->gradientAngle == 0.0) {
+            sx = bounds[0];
+            ex = bounds[2];
+            sy = bounds[1];
+            ey = bounds[1];
+        } else if (effect->gradientAngle == 90.0) {
+            sx = bounds[0];
+            ex = bounds[0];
+            sy = bounds[1];
+            ey = bounds[3];
+        }
+
+        NVGpaint paint = nvgLinearGradient(vg_, sx, sy, ex, ey,
+            toNVGColor(effect->gradientStartColor),
+            toNVGColor(effect->gradientEndColor));
+        
+        nvgFillPaint(vg_, paint);
+
+        // INVISIBLE FLUSH: Force Wayland/OpenGL to bind the gradient uniform 
+        // before nvgText executes, working around a known shader state bug.
+        nvgBeginPath(vg_);
+        nvgRect(vg_, 0, 0, 0, 0);
+        nvgFill(vg_);
+    } else {
+        nvgFillColor(vg_, toNVGColor(color));
+    }
+
+    nvgSave(vg_);
+        if (clipString == 2 && maxWidth > 0) {
+        if (maxHeight > 0) {
+            // 2. Apply the bounding box mask based on the INI W and H variables
+            nvgScissor(vg_, 0, 0, maxWidth, maxHeight);
+        }
+        // 3. Draw the meter (nvgText or nvgImagePattern/nvgFill)
+        nvgTextBox(vg_, 0, 0, maxWidth, textToDraw.c_str(), nullptr);
+    } else {
+        // 3. Draw the meter (nvgText or nvgImagePattern/nvgFill)
+        nvgText(vg_, 0, 0, textToDraw.c_str(), nullptr);
+    }
     
+    // 4. Immediately restore the state
+    nvgRestore(vg_);
+
     return metrics;
 }
 
@@ -506,4 +659,8 @@ void NanoVGRenderer::save() {
 
 void NanoVGRenderer::restore() {
     if (vg_) nvgRestore(vg_);
+}
+
+void NanoVGRenderer::resetScissor() {
+    if (vg_) nvgResetScissor(vg_);
 }

@@ -1,18 +1,30 @@
 #include "engine/SkinManager.hpp"
 
 #include <iostream>
+#include "evaluator/SysfsParser.hpp"
 
-bool SkinManager::LoadSkin(const std::string &iniPath) {
-  auto inst = SkinInstance::Load(iniPath);
+bool SkinManager::LoadSkin(const std::string &iniPath, int overrideMonitor) {
+  auto inst = SkinInstance::Load(iniPath, overrideMonitor);
   if (!inst) {
     std::cerr << "SkinManager: failed to load '" << iniPath << "'\n";
     return false;
   }
+  
+  // Register custom fonts from @Resources/Fonts
+  std::filesystem::path resPath = inst->GetResourcesPath();
+  if (!resPath.empty()) {
+      std::string fontsDir = (resPath / "Fonts").string();
+      if (std::filesystem::exists(fontsDir)) {
+          inst->GetRenderer().registerFontDirectory(fontsDir);
+      }
+  }
+  
   skins_.push_back(std::move(inst));
   return true;
 }
 
 void SkinManager::UpdateAll(double dtMs) {
+  SysfsParser::getInstance().update();
   for (auto &skin : skins_) {
     if (!skin->IsActive())
       continue;

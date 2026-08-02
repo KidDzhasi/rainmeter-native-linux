@@ -8,6 +8,7 @@
 #include "engine/SkinManager.hpp"
 #include "evaluator/ThemeParser.hpp"
 #include "installer/SkinInstaller.hpp"
+#include "utils/PathResolver.hpp"
 
 namespace {
 
@@ -36,6 +37,7 @@ int main(int argc, char **argv) {
   // Flags like --install are handled inline and cause an early return.
   // -----------------------------------------------------------------------
   std::vector<std::string> inputPaths;
+  int globalMonitorIndex = -1;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -53,15 +55,22 @@ int main(int argc, char **argv) {
       std::cout << "Skin installed successfully.\n";
       return 0;
     }
+    if (arg == "-m" || arg == "--monitor") {
+      if (i + 1 >= argc) {
+        std::cerr << "Error: " << arg << " requires a monitor index.\n";
+        return 1;
+      }
+      globalMonitorIndex = std::stoi(argv[++i]);
+      continue;
+    }
     if (!arg.empty() && arg[0] != '-') {
-      inputPaths.push_back(arg);
+      inputPaths.push_back(Utils::ResolvePath(arg));
     }
   }
 
   // Fallback when no arguments are provided.
   if (inputPaths.empty()) {
-    inputPaths.push_back(
-        "/home/remember/Desktop/Projects/rainmeter-to-eww/illustro_clock.ini");
+    inputPaths.push_back(Utils::ResolvePath("~/.config/rainmeter-native/Rainmeter.ini"));
   }
 
   // -----------------------------------------------------------------------
@@ -121,7 +130,7 @@ int main(int argc, char **argv) {
   // -----------------------------------------------------------------------
   SkinManager manager;
   for (const auto &path : widgetPaths) {
-    manager.LoadSkin(path);
+    manager.LoadSkin(path, globalMonitorIndex);
   }
   if (manager.ActiveCount() == 0) {
     std::cerr << "Error: no skins could be started.\n";

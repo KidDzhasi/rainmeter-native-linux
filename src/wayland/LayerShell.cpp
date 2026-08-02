@@ -57,30 +57,37 @@ const wl_seat_listener kSeatListener = {
 };
 
 // --- Pointer listener trampolines ---
-void pointerEnter(void *data, wl_pointer * /*pointer*/, uint32_t /*serial*/,
-                  wl_surface * /*surface*/, wl_fixed_t surface_x,
-                  wl_fixed_t surface_y) {
-  static_cast<LayerShellWindow *>(data)->handlePointerEnter(
-      wl_fixed_to_double(surface_x), wl_fixed_to_double(surface_y));
-}
-void pointerLeave(void * /*data*/, wl_pointer * /*pointer*/,
-                  uint32_t /*serial*/, wl_surface * /*surface*/) {}
-void pointerMotion(void *data, wl_pointer * /*pointer*/, uint32_t /*time*/,
-                   wl_fixed_t surface_x, wl_fixed_t surface_y) {
-  static_cast<LayerShellWindow *>(data)->handlePointerMotion(
-      wl_fixed_to_double(surface_x), wl_fixed_to_double(surface_y));
-}
-void pointerButton(void *data, wl_pointer * /*pointer*/, uint32_t /*serial*/,
-                   uint32_t /*time*/, uint32_t button, uint32_t state) {
-  static_cast<LayerShellWindow *>(data)->handlePointerButton(button, state);
-}
-void pointerAxis(void * /*data*/, wl_pointer * /*pointer*/, uint32_t /*time*/,
-                 uint32_t /*axis*/, wl_fixed_t /*value*/) {}
-// These are available in newer protocol versions, but we define nullops if we bind a higher version.
-void pointerFrame(void * /*data*/, wl_pointer * /*pointer*/) {}
-void pointerAxisSource(void * /*data*/, wl_pointer * /*pointer*/, uint32_t /*axis_source*/) {}
-void pointerAxisStop(void * /*data*/, wl_pointer * /*pointer*/, uint32_t /*time*/, uint32_t /*axis*/) {}
-void pointerAxisDiscrete(void * /*data*/, wl_pointer * /*pointer*/, uint32_t /*axis*/, int32_t /*discrete*/) {}
+const struct wl_pointer_listener kPointerListener = {
+    .enter = [](void *data, wl_pointer *, uint32_t, wl_surface *, wl_fixed_t x,
+                wl_fixed_t y) {
+      static_cast<LayerShellWindow *>(data)->handlePointerEnter(
+          wl_fixed_to_double(x), wl_fixed_to_double(y));
+    },
+    .leave = [](void *, wl_pointer *, uint32_t, wl_surface *) {},
+    .motion = [](void *data, wl_pointer *, uint32_t, wl_fixed_t x,
+                 wl_fixed_t y) {
+      static_cast<LayerShellWindow *>(data)->handlePointerMotion(
+          wl_fixed_to_double(x), wl_fixed_to_double(y));
+    },
+    .button = [](void *data, wl_pointer *, uint32_t, uint32_t, uint32_t button,
+                 uint32_t state) {
+      static_cast<LayerShellWindow *>(data)->handlePointerButton(button, state);
+    },
+    .axis = [](void *, wl_pointer *, uint32_t, uint32_t, wl_fixed_t) {},
+    .frame = [](void *, wl_pointer *) {},
+    .axis_source = [](void *, wl_pointer *, uint32_t) {},
+    .axis_stop = [](void *, wl_pointer *, uint32_t, uint32_t) {},
+    .axis_discrete = [](void *, wl_pointer *, uint32_t, int32_t) {},
+};
+
+const struct wl_output_listener kOutputListener = {
+    .geometry = [](void *, wl_output *, int32_t, int32_t, int32_t, int32_t, int32_t, const char *, const char *, int32_t) {},
+    .mode = [](void *data, wl_output *output, uint32_t flags, int32_t width, int32_t height, int32_t) {
+        static_cast<LayerShellWindow *>(data)->handleOutputMode(output, flags, width, height);
+    },
+    .done = [](void *, wl_output *) {},
+    .scale = [](void *, wl_output *, int32_t) {},
+};
 
 
 // --- NATIVE KEYBOARD INPUT STUBS ---
@@ -146,18 +153,6 @@ const wl_keyboard_listener kKeyboardListener = {
 };
 // -----------------------------------
 
-const wl_pointer_listener kPointerListener = {
-    .enter = pointerEnter,
-    .leave = pointerLeave,
-    .motion = pointerMotion,
-    .button = pointerButton,
-    .axis = pointerAxis,
-    .frame = pointerFrame,
-    .axis_source = pointerAxisSource,
-    .axis_stop = pointerAxisStop,
-    .axis_discrete = pointerAxisDiscrete,
-};
-
 } // namespace
 
 LayerShellWindow::~LayerShellWindow() { disconnect(); }
@@ -172,6 +167,8 @@ bool LayerShellWindow::connect() {
   registry_ = wl_display_get_registry(display_);
   wl_registry_add_listener(registry_, &kRegistryListener, this);
 
+  wl_display_roundtrip(display_);
+  // Second roundtrip to ensure we receive the bound output geometry events
   wl_display_roundtrip(display_);
 
   if (compositor_ == nullptr) {
@@ -201,8 +198,25 @@ void LayerShellWindow::handleGlobal(wl_registry *registry, uint32_t name,
   } else if (std::strcmp(interface, wl_output_interface.name) == 0) {
     wl_output *output = static_cast<wl_output *>(
         wl_registry_bind(registry, name, &wl_output_interface, version < 3 ? version : 3));
-    outputs_.push_back(output);
+    OutputInfo info;
+    info.output = output;
+    outputs_.push_back(info);
+    wl_output_add_listener(output, &kOutputListener, this);
   }
+}
+
+int LayerShellWindow::getScreenWidth(int monitorIndex) const noexcept {
+    if (monitorIndex >= 0 && monitorIndex < static_cast<int>(outputs_.size())) {
+        return outputs_[monitorIndex].width;
+    }
+    return 1920; // fallback
+}
+
+int LayerShellWindow::getScreenHeight(int monitorIndex) const noexcept {
+    if (monitorIndex >= 0 && monitorIndex < static_cast<int>(outputs_.size())) {
+        return outputs_[monitorIndex].height;
+    }
+    return 1080; // fallback
 }
 
 bool LayerShellWindow::initLayerSurface(int width, int height, int windowX, int windowY, int monitorIndex, uint32_t anchor, const std::string &scope) {
@@ -216,7 +230,7 @@ bool LayerShellWindow::initLayerSurface(int width, int height, int windowX, int 
 
   wl_output *targetOutput = nullptr;
   if (monitorIndex >= 0 && monitorIndex < static_cast<int>(outputs_.size())) {
-    targetOutput = outputs_[monitorIndex];
+    targetOutput = outputs_[monitorIndex].output;
   }
 
   layerSurface_ = zwlr_layer_shell_v1_get_layer_surface(
@@ -231,6 +245,11 @@ bool LayerShellWindow::initLayerSurface(int width, int height, int windowX, int 
                                      this);
   zwlr_layer_surface_v1_set_size(layerSurface_, static_cast<uint32_t>(width),
                                  static_cast<uint32_t>(height));
+                                 
+  // Anchor to top-left and apply X/Y as margins for global screen positioning
+  zwlr_layer_surface_v1_set_anchor(layerSurface_, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
+  zwlr_layer_surface_v1_set_margin(layerSurface_, windowY, 0, 0, windowX);
+
   g_RequestKeyboardFocus = [this]() {
       if (layerSurface_ && surface_) {
           // Force Wayland to elevate the widget and grant keyboard focus!
@@ -249,10 +268,8 @@ bool LayerShellWindow::initLayerSurface(int width, int height, int windowX, int 
   };
 
   
-  if (anchor == 0 && scope == "rainmeter-native") { // fallback for old calls if any, though SkinInstance will pass explicit anchors
-      anchor = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
-  }
-  zwlr_layer_surface_v1_set_anchor(layerSurface_, anchor);
+  // Always anchor to top-left so that WindowX and WindowY absolute coordinates work as margins
+  zwlr_layer_surface_v1_set_anchor(layerSurface_, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT);
   zwlr_layer_surface_v1_set_margin(layerSurface_, windowY, 0, 0, windowX);
   zwlr_layer_surface_v1_set_keyboard_interactivity(layerSurface_, 0);
 
@@ -387,6 +404,18 @@ void LayerShellWindow::handlePointerButton(uint32_t button, uint32_t state) {
       mouseCb_(pointerX_, pointerY_, button);
     }
   }
+}
+
+void LayerShellWindow::handleOutputMode(wl_output *output, uint32_t flags, int width, int height) {
+    if (flags & WL_OUTPUT_MODE_CURRENT) {
+        for (auto &info : outputs_) {
+            if (info.output == output) {
+                info.width = width;
+                info.height = height;
+                break;
+            }
+        }
+    }
 }
 
 void LayerShellWindow::run() {

@@ -4,7 +4,7 @@
 InputTextState g_InputState;
 #include "MeasureEvaluator.hpp"
 #include "parser/IniLexer.hpp"
-#include "MprisClient.hpp"
+#include "NowPlayingMeasure.hpp"
 #include "ScriptEnvironment.hpp"
 #include "MathParser.hpp"
 #include <cstdio>
@@ -127,6 +127,46 @@ BangResult CommandProcessor::execute(const std::string &bangString,
           }
         }
         skin.setVariable(tokens[1], value);
+        result.needsUpdate = true;
+        result.needsRedraw = true;
+      }
+    } else if (cmd == "!WRITEKEYVALUE") {
+      if (tokens.size() >= 4) {
+        std::string section = tokens[1];
+        std::string key = tokens[2];
+        std::string value = tokens[3];
+        
+        // FilePath is optional (token 4)
+        std::string filePath = "";
+        if (tokens.size() >= 5) {
+            filePath = tokens[4];
+            // Expand #@# if present
+            filePath = skin.expandMacros(filePath);
+        } else {
+            // Default to current skin file path, but unfortunately CommandProcessor 
+            // doesn't have the skin path directly. We can fetch it via EnvironmentManager 
+            // if we add a way, but since we usually don't know it in this scope, we can 
+            // assume it's passed or try to use #CURRENTPATH##CURRENTFILE#. 
+            // Let's resolve via builtins if possible, else it's tricky.
+            // Wait, we can evaluate #CURRENTFILE# through IniLexer expandBuiltins.
+            filePath = skin.expandBuiltins("#CURRENTPATH##CURRENTFILE#");
+        }
+        
+        // Strip quotes if they were kept around the file path
+        if (!filePath.empty() && filePath.front() == '"' && filePath.back() == '"') {
+            filePath = filePath.substr(1, filePath.size() - 2);
+        }
+        
+        if (!filePath.empty()) {
+            bool success = IniLexer::writeKeyValue(filePath, section, key, value);
+            if (success) {
+                std::cout << "[!WRITEKEYVALUE] Wrote " << key << "=" << value << " to [" << section << "] in " << filePath << "\n";
+            } else {
+                std::cout << "[!WRITEKEYVALUE] Error writing to " << filePath << "\n";
+            }
+        } else {
+            std::cout << "[!WRITEKEYVALUE] Error: No file path provided or could not resolve current skin path.\n";
+        }
       }
     } else if (cmd == "!UPDATE") {
       result.needsUpdate = true;
@@ -174,10 +214,9 @@ BangResult CommandProcessor::execute(const std::string &bangString,
              timer->handleCommand(measureCmd);
          } else if (auto scriptEnv = measures.getScript(measureName)) {
              scriptEnv->executeCommand(measureCmd);
-         } else if (auto mpris = measures.getMpris()) {
-             mpris->sendCommand(measureCmd);
          } else {
-             std::cout << "Warning: !CommandMeasure target '" << measureName << "' not found\n";
+             // For NowPlaying, any CommandMeasure is routed to the shared backend
+             NowPlayingBackend::getInstance().sendCommand(measureCmd);
          }
       }
     } else if (cmd == "!DEACTIVATECONFIG") {

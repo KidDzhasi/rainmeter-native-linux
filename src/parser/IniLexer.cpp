@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -61,16 +62,19 @@ std::string_view IniLexer::trim(std::string_view sv) {
   return sv.substr(first, last - first + 1);
 }
 
-std::string IniLexer::utf16leToUtf8(const char *bytes, std::size_t byteCount) {
+std::string IniLexer::utf16ToUtf8(const char *bytes, std::size_t byteCount, bool bigEndian) {
   std::string out;
   out.reserve(byteCount / 2);
 
   const std::size_t units = byteCount / 2;
   auto readUnit = [&](std::size_t i) -> std::uint32_t {
-    const auto lo = static_cast<unsigned char>(bytes[2 * i]);
-    const auto hi = static_cast<unsigned char>(bytes[2 * i + 1]);
-    return static_cast<std::uint32_t>(lo) |
-           (static_cast<std::uint32_t>(hi) << 8);
+    const auto b0 = static_cast<unsigned char>(bytes[2 * i]);
+    const auto b1 = static_cast<unsigned char>(bytes[2 * i + 1]);
+    if (bigEndian) {
+        return (static_cast<std::uint32_t>(b0) << 8) | static_cast<std::uint32_t>(b1);
+    } else {
+        return static_cast<std::uint32_t>(b0) | (static_cast<std::uint32_t>(b1) << 8);
+    }
   };
 
   for (std::size_t i = 0; i < units;) {
@@ -114,18 +118,21 @@ bool IniLexer::readFileUtf8(const std::string &filePath, std::string &out) {
     return false;
   }
 
-  // Peek at the first two bytes to detect a UTF-16 LE BOM (0xFF 0xFE).
+  // Peek at the first two bytes to detect a UTF-16 BOM.
+  // LE BOM: 0xFF 0xFE
+  // BE BOM: 0xFE 0xFF
   unsigned char bom[2] = {0, 0};
   file.read(reinterpret_cast<char *>(bom), 2);
   const std::streamsize bomRead = file.gcount();
 
-  if (bomRead == 2 && bom[0] == 0xFF && bom[1] == 0xFE) {
-    // UTF-16 LE: read the remainder (after the BOM) as char16_t data and
+  if (bomRead == 2 && ((bom[0] == 0xFF && bom[1] == 0xFE) || (bom[0] == 0xFE && bom[1] == 0xFF))) {
+    bool bigEndian = (bom[0] == 0xFE);
+    // UTF-16: read the remainder (after the BOM) as char16_t data and
     // convert it to UTF-8. The stream is already positioned past the BOM.
     std::ostringstream buffer;
     buffer << file.rdbuf();
     const std::string raw = buffer.str();
-    out = utf16leToUtf8(raw.data(), raw.size());
+    out = utf16ToUtf8(raw.data(), raw.size(), bigEndian);
     return true;
   }
 
@@ -312,8 +319,11 @@ IniLexer::resolveCaseInsensitivePath(const std::string &basePath,
   return current.string();
 }
 
-bool IniLexer::parseFile(const std::string &filePath) {
-  data_.clear();
+bool IniLexer::parseFile(const std::string &filePath, bool clear) {
+  if (clear) {
+    data_.clear();
+    sectionOrder_.clear();
+  }
 
   std::string content;
   if (!readFileUtf8(filePath, content)) {
@@ -328,6 +338,7 @@ bool IniLexer::parseFile(const std::string &filePath) {
 
 bool IniLexer::parseString(std::string_view content) {
   data_.clear();
+  sectionOrder_.clear();
   // No file context: #@# expands to whatever resourcesPath_ currently holds
   // (empty by default), and relative @include targets resolve against ".".
   return parseContent(content, ".", 0, "");
@@ -369,7 +380,10 @@ bool IniLexer::parseContent(std::string_view content,
         std::string_view name = trim(line.substr(1, close - 1));
         currentSection.assign(name);
         stripCR(currentSection);
-        data_.try_emplace(currentSection);
+        auto [it, inserted] = data_.try_emplace(currentSection);
+        if (inserted) {
+          sectionOrder_.push_back(currentSection);
+        }
       }
       continue;
     }
@@ -523,4 +537,109 @@ void IniLexer::setVariable(const std::string &name, const std::string &value) {
 
 bool IniLexer::hasSection(std::string_view section) const {
   return data_.find(std::string(section)) != data_.end();
+}
+
+bool IniLexer::writeKeyValue(const std::string& filePath, const std::string& section, const std::string& key, const std::string& value) {
+  std::string content;
+  if (!readFileUtf8(filePath, content)) {
+    // If the file doesn't exist, we can create it
+    content = "";
+  }
+
+  // Parse lines to find the section and key
+  std::vector<std::string> lines;
+  std::size_t pos = 0;
+  while (pos < content.size()) {
+    std::size_t eol = content.find('\n', pos);
+    if (eol == std::string::npos) {
+      lines.push_back(content.substr(pos));
+      break;
+    }
+    lines.push_back(content.substr(pos, eol - pos + 1));
+    pos = eol + 1;
+  }
+
+  // Case-insensitive compare helpers
+  auto toLower = [](std::string_view s) {
+    std::string out(s);
+    for (char &c : out) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+  };
+  auto trim = [](std::string_view sv) {
+    const auto first = sv.find_first_not_of(" \t\r\n\f\v");
+    if (first == std::string_view::npos) return std::string_view{};
+    const auto last = sv.find_last_not_of(" \t\r\n\f\v");
+    return sv.substr(first, last - first + 1);
+  };
+
+  std::string wantSection = toLower(section);
+  std::string wantKey = toLower(key);
+  
+  bool inTargetSection = false;
+  bool keyFound = false;
+  int targetSectionLine = -1;
+  int lastSectionLine = -1;
+
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    std::string_view lineView = trim(lines[i]);
+    if (lineView.empty() || lineView.front() == ';') continue;
+
+    if (lineView.front() == '[') {
+      const auto close = lineView.find(']');
+      if (close != std::string_view::npos) {
+        std::string name(lineView.substr(1, close - 1));
+        inTargetSection = (toLower(name) == wantSection);
+        if (inTargetSection) {
+          targetSectionLine = i;
+        }
+        lastSectionLine = i;
+      }
+      continue;
+    }
+
+    if (inTargetSection) {
+      const auto eq = lineView.find('=');
+      if (eq != std::string_view::npos) {
+        std::string_view keyView = trim(lineView.substr(0, eq));
+        if (toLower(keyView) == wantKey) {
+          // Replace this line
+          lines[i] = std::string(key) + "=" + std::string(value) + "\n";
+          keyFound = true;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!keyFound) {
+    std::string newLine = std::string(key) + "=" + std::string(value) + "\n";
+    if (targetSectionLine != -1) {
+      // Find where this section ends
+      std::size_t insertIdx = targetSectionLine + 1;
+      while (insertIdx < lines.size()) {
+        std::string_view lineView = trim(lines[insertIdx]);
+        if (!lineView.empty() && lineView.front() == '[') {
+          break; // Start of next section
+        }
+        insertIdx++;
+      }
+      lines.insert(lines.begin() + insertIdx, newLine);
+    } else {
+      // Section doesn't exist, append it at the end
+      if (!lines.empty() && trim(lines.back()).length() > 0) {
+          lines.push_back("\n");
+      }
+      lines.push_back("[" + section + "]\n");
+      lines.push_back(newLine);
+    }
+  }
+
+  std::ofstream out(filePath, std::ios::out | std::ios::binary | std::ios::trunc);
+  if (!out.is_open()) return false;
+  for (const auto& line : lines) {
+    out.write(line.data(), line.size());
+  }
+  return true;
 }

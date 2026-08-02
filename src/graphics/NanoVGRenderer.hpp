@@ -20,6 +20,19 @@ public:
     double width = 0.0;
     double height = 0.0;
   };
+  
+  struct TextEffect {
+      bool shadowEnabled = false;
+      double shadowX = 0.0;
+      double shadowY = 0.0;
+      double shadowBlur = 0.0;
+      Color shadowColor = {0,0,0,255};
+
+      bool gradientEnabled = false;
+      double gradientAngle = 0.0; // degrees
+      Color gradientStartColor = {0,0,0,255};
+      Color gradientEndColor = {255,255,255,255};
+  };
 
   NanoVGRenderer() = default;
   ~NanoVGRenderer();
@@ -53,7 +66,9 @@ public:
   
   TextMetrics drawText(const std::string &text, double x, double y,
                        const std::string &fontFace, double fontSize,
-                       const Color &color, TextAlign align = TextAlign::Left);
+                       const Color &color, TextAlign align = TextAlign::Left, double angle = 0.0,
+                       const TextEffect* effect = nullptr,
+                       double maxWidth = 0.0, double maxHeight = 0.0, int clipString = 0);
 
   static std::string substituteText(const std::string &text, const std::string &value);
   static std::string substituteText(const std::string &text, const std::vector<std::string> &values);
@@ -62,11 +77,13 @@ public:
   int width() const noexcept { return width_; }
   int height() const noexcept { return height_; }
   bool valid() const noexcept { return vg_ != nullptr; }
+  NVGcontext* context() const { return vg_; }
 
   // Set current transformation matrix (expects float[6])
   void setTransform(const std::array<float, 6>& matrix);
   void save();
   void restore();
+  void resetScissor();
 
 private:
   void reset();

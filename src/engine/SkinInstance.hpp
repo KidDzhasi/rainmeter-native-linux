@@ -34,9 +34,8 @@ struct MeterBounds {
 class SkinInstance {
 public:
   // Factory: parses the INI file, sets up measures, math parser, Wayland
-  // window, and mouse callback. Returns nullptr on any failure (bad path,
-  // compositor unavailable, etc.).
-  static std::unique_ptr<SkinInstance> Load(const std::string &iniPath);
+  // window, and mouse callback.  // Returns null if the instance fails to load (e.g. invalid config, Wayland failure).
+  static std::unique_ptr<SkinInstance> Load(const std::string &iniPath, int overrideMonitor = -1);
 
   ~SkinInstance() = default;
   SkinInstance(const SkinInstance &) = delete;
@@ -63,6 +62,15 @@ public:
   bool IsActive() const;
   bool NeedsUpdate() const;
   bool NeedsRedraw() const;
+  void ClearUpdateFlag();
+  
+  static std::string resolveVariables(const IniLexer &skin,
+                                      const MeasureEvaluator *measures,
+                                      const std::string &section,
+                                      const std::string &value);
+  
+  std::string GetResourcesPath() const { return skin_.resourcesPath(); }
+  NanoVGRenderer& GetRenderer() { return const_cast<NanoVGRenderer&>(renderer_); }
   const std::string &IniPath() const { return iniPath_; }
 
 private:
@@ -72,20 +80,16 @@ private:
   void paintScene();
 
   // --- Coordinate / value resolution helpers ---
-  static double resolveNum(const IniLexer &skin, const MathParser &math,
+  static double resolveNum(const IniLexer &skin, const MeasureEvaluator *measures, const MathParser &math,
                            const std::string &section, const std::string &key,
                            double def);
   static std::string getKeyCI(const IniLexer &skin, const std::string &section,
                               const std::string &key);
-  static double resolveCoord(const IniLexer &skin, const MathParser &math,
+  static double resolveCoord(const IniLexer &skin, const MeasureEvaluator *measures, const MathParser &math,
                              const std::string &section,
                              const std::string &key, double relBase,
                              double relStack, double def);
   static NanoVGRenderer::TextAlign parseAlign(const std::string &spec);
-  static std::string resolveVariables(const IniLexer &skin,
-                                      const MeasureEvaluator *measures,
-                                      const std::string &section,
-                                      const std::string &text);
   static std::string resolveImagePath(const IniLexer &skin,
                                       const MeasureEvaluator *measures,
                                       const std::string &section,
