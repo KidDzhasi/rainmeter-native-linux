@@ -3,13 +3,13 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*' # This triggers the workflow ONLY when you push a tag like "v1.0.0"
+      - 'v*'
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Needed to create the release
+      contents: write
 
     steps:
     - name: 📥 Checkout repository
@@ -18,7 +18,7 @@ jobs:
     - name: 🛠️ Install Build Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgles2-mesa-dev
+        sudo apt-get install -y build-essential cmake pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgles2-mesa-dev libepoxy-dev
 
     - name: ⚙️ Compile C++ Engine
       run: |
@@ -28,16 +28,13 @@ jobs:
     - name: 📦 Package Application
       run: |
         mkdir -p dist/rainmeter-native
-        # Copy the compiled binary, scripts, and assets (ignoring errors if a folder is missing)
         cp build/rainmeter-native dist/rainmeter-native/ || true
         cp trad_launcher.py launch_trad.sh dist/rainmeter-native/
         cp -r assets suites dist/rainmeter-native/ 2>/dev/null || true
-        
-        # Compress everything into a tarball
         tar -czvf rainmeter-native-linux-x86_64.tar.gz -C dist rainmeter-native
 
     - name: 🚀 Publish GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         files: rainmeter-native-linux-x86_64.tar.gz
-        generate_release_notes: true # Automatically generates release notes from your commits
+        generate_release_notes: true
