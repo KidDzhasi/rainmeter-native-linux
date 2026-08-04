@@ -18,7 +18,7 @@ jobs:
     - name: 🛠️ Install Build Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential cmake pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgles2-mesa-dev libepoxy-dev
+        sudo apt-get install -y build-essential cmake pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgles2-mesa-dev libepoxy-dev libfontconfig1-dev
 
     - name: ⚙️ Compile C++ Engine
       run: |
