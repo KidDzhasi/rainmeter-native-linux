@@ -3,6 +3,6 @@ Type=Application
 Name=Trad Rainmeter
 Comment=Trad Rainmeter Desktop Widgets, Suites, Themes & Visualizers for Linux
 Exec=python3 /home/k-trad/Documents/GitHub/rainmeter-native-linux/launcher_gui.py
-Icon=trad-engine
+Icon=/home/k-trad/Documents/GitHub/rainmeter-native-linux/assets/trad-engine.svg
 Terminal=false
 Categories=Utility;DesktopSettings;
