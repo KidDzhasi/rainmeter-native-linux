@@ -1,0 +1,17 @@
+{
+  "name": "CyberClock",
+  "widgets": [
+    {
+      "key": "/home/k-trad/.config/rainmeter-native/Skins/CyberClock/CyberClock.ini",
+      "title": "CyberClock / CyberClock",
+      "monitor": 1,
+      "anchor_x": "center",
+      "anchor_y": "center",
+      "use_custom_pos": false,
+      "x": 574,
+      "y": 339,
+      "auto_fit": false,
+      "scale": 1.0
+    }
+  ]
+}

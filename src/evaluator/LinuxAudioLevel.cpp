@@ -140,14 +140,13 @@ void LinuxAudioLevel::computeFFT(const std::vector<float>& pcm) {
     // Convert to dB
     double rmsDb = 20.0 * std::log10(rmsLinear + 1e-9);
     
-    // Dynamic Range Headroom (drop floor, raise ceiling)
-    double floorDb = -80.0;
-    double ceilingDb = 0.0; // Raise ceiling to 0dB
+    // Dynamic Range Headroom for musical spectrum visualization
+    double floorDb = -54.0;
+    double ceilingDb = -6.0;
     
     double currentRms = (rmsDb - floorDb) / (ceilingDb - floorDb);
-    
-    // Apply sensitivity mapping
-    currentRms *= (sensitivity_ / 10.0);
+    currentRms = std::clamp(currentRms, 0.0, 1.0);
+    currentRms = std::pow(currentRms, 1.5) * (sensitivity_ / 35.0);
     currentRms = std::clamp(currentRms, 0.0, 1.0);
     
     // 2. Perform FFT
@@ -208,14 +207,14 @@ void LinuxAudioLevel::computeFFT(const std::vector<float>& pcm) {
         
         // Convert to dB for natural dynamic range
         double db = 20.0 * std::log10(magnitude + 1e-9);
-        double normalized = (db - floorDb) / (ceilingDb - floorDb);
+        double normalized = std::clamp((db - floorDb) / (ceilingDb - floorDb), 0.0, 1.0);
         
-        // High-Frequency Boosting (Mild progressive multiplier)
-        double freqWeight = 1.0 + (b * 0.15);
-        normalized *= freqWeight;
+        // Apply power curve so quiet harmonics don't peg the bars at 100%
+        normalized = std::pow(normalized, 1.65);
         
-        // Apply sensitivity mapping
-        normalized *= (sensitivity_ / 10.0);
+        // Mild high-frequency tilt compensation
+        double freqWeight = 0.85 + (static_cast<double>(b) / std::max(1, bands_)) * 0.55;
+        normalized *= freqWeight * (sensitivity_ / 35.0);
         
         // Clamp strictly at the end
         currentBands[b] = std::clamp(normalized, 0.0, 1.0);

@@ -145,6 +145,18 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
       c = '/';
     }
   }
+
+  // Check if `rel` is already a valid absolute or relative path (e.g. repo
+  // `suites/...` when launched from the repo root or `build/`).
+  std::error_code ecCheck;
+  if (std::filesystem::is_regular_file(rel, ecCheck)) {
+    return std::filesystem::absolute(rel, ecCheck).lexically_normal().string();
+  }
+  std::filesystem::path parentRel = std::filesystem::path("..") / rel;
+  if (std::filesystem::is_regular_file(parentRel, ecCheck)) {
+    return std::filesystem::absolute(parentRel, ecCheck).lexically_normal().string();
+  }
+
   // Trim any leading/trailing slashes.
   while (!rel.empty() && rel.front() == '/') {
     rel.erase(rel.begin());

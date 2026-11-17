@@ -1,93 +1,21 @@
-# rainmeter-native
+# Trad Rainmeter
 
-A lightweight, hardware-accelerated, Wayland-native rendering engine for Linux desktop environments. 
+A lightweight, hardware-accelerated native Linux desktop widget engine and GNOME Shell companion (`trad-rainmeter@kiddzhasi.github.com`) for Wayland and XWayland desktop environments.
 
-Unlike the legacy Windows client, `rainmeter-native` does not attempt to parse undocumented hacks or nested variables from older `.rmskin` files. Instead, it offers a clean, strict, and predictable INI syntax designed specifically for modern Linux systems.
+## Highlights
 
-## Getting Started: Building a Skin from Scratch
+- **GNOME Wayland / Mutter & Layer-Shell Compatible:** Pins widgets cleanly to the desktop background beneath normal application windows, with per-monitor positioning, fractional scaling, and automatic resolution fitting (`AutoFit`).
+- **Trad Rainmeter Control Center (`launcher_gui.py`):** Native GTK4 / Libadwaita application featuring:
+  - **Suites Tab:** One-click suite switching (`TradSunset`, `DashboardSuite`, `TealMountainSuite`, `GreenRibbonSuite`, plus user-saved custom suites).
+  - **Basic Widgets & Theme Studio:** 8 modular anchored system widgets (`BasicClock`, `BasicDate`, `BasicWeather`, `BasicCpu`, `BasicRamSwap`, `BasicNet`, `BasicDisks`, `BasicStorage`) with **10 Color Themes** (`Neon Blue`, `Frosted Glass`, `Pure Transparent`, `Arctic Blue`, `Fedora Cyber`, `Crystal Aqua Glass`, `Sunset Glow`, `Sapphire & Amber`, `Crimson Night Drive`, `Obsidian Lime`), **6 Card Shapes** (`Rounded Card`, `Sharp Box`, `Soft Squircle`, `Full Pill / Capsule`, `Circular Disc`, `Floating Borderless`), and **4 Widget Design Styles** (`Vertical Bars`, `Circular Ring Gauges`, `Capsule Pill`, `Horizontal Minimal`).
+  - **Music Players & Audio Visualizers:** Live MPRIS2 D-Bus media player widgets (`MusicBanner`, `MusicMinimal`, `MusicCompact`) and real-time PulseAudio / PipeWire FFT spectrum visualizers (`AudioVisualizer`, `AudioHorizon`).
+  - **Widgets & Position Studio:** Interactive multi-widget monitor canvas, `.rmskin` / `.ini` installer, widget uninstaller, and custom Suite Builder.
+- **GNOME Shell Extension (`gnome-extension/trad-rainmeter@kiddzhasi.github.com`):** Top-bar indicator for GNOME 45–51 compatible with GNOME Extension Manager and `extensions.gnome.org`.
 
-In `rainmeter-native`, a "Skin" is simply a folder containing an `.ini` file that defines your **Measures** (backend data) and **Meters** (frontend UI).
+## Quick Start
 
-### 1. Folder Structure
-Create a new directory for your suite inside the skins folder:
-`~/.config/rainmeter-native/Skins/MyCustomSuite/`
-
-Inside that folder, create your configuration file (e.g., `HUD.ini`).
-
-### 2. The Global Rainmeter Block
-Every `.ini` file must start with a base configuration block to tell the Wayland engine how fast to render:
-
-```ini
-[Rainmeter]
-Update=1000
-
-### 3. Adding Measures (The Data Layer)
-Measures run silently in the background, polling the Linux filesystem (like /proc/stat and /sys/class/power_supply) for live telemetry.
-
-Currently supported native measures:
-
-Measure=CPU (Calculates overall CPU load)
-
-Measure=Battery (Requires BatteryName=BAT0 or BAT1)
-
-Ini, TOML
-[MeasureCoreCPU]
-Measure=CPU
-
-[MeasureMainBattery]
-Measure=Battery
-BatteryName=BAT0
-
-### 4. Adding Meters (The UI Layer)
-Meters draw pixels to the screen using the NanoVG rendering pipeline. You can bind a Meter to a Measure using the MeasureName= key.
-
-Supported Meter Types:
-
-Shape: Draws vector geometry (Rectangle, Ellipse). Colors use standard R,G,B,A format.
-
-String: Renders hardware-accelerated text. Use %1 to inject live data from a bound Measure.
-
-Image: Loads .jpg or .png files directly into Wayland memory. (Place the image file in the same directory as your .ini).
-
-### 5. Example: A Complete System HUD
-Here is a complete, functioning example of a native widget. Paste this into your HUD.ini:
-
-Ini, TOML
-[Rainmeter]
-Update=1000
-
-; --- DATA BACKEND ---
-
-[MeasureCoreCPU]
-Measure=CPU
-
-; --- FRONTEND UI ---
-
-[MeterBackgroundPanel]
-Meter=Shape
-Shape=Rectangle 0,0,250,80,10 | Fill Color 15,20,30,220 | StrokeWidth 2 | Stroke Color 0,255,200,150
-X=0
-Y=0
-LeftMouseUpAction=["notify-send 'System' 'HUD Clicked'"]
-
-[MeterCPULabel]
-Meter=String
-MeasureName=MeasureCoreCPU
-FontFace=Ubuntu
-FontSize=16
-FontWeight=700
-FontColor=255,255,255,255
-Text="CPU LOAD: %1%"
-AntiAlias=1
-X=15
-Y=25
-
-### 6. Activating the Skin
-To load your new creation, edit your global layout file located at ~/.config/rainmeter-native/Rainmeter.ini and append your widget:
-
-Ini, TOML
-[MyCustomSuite]
-Active=1
-WindowX=(#SCREENAREAWIDTH# * 0.1)
-WindowY=(#SCREENAREAHEIGHT# * 0.1)
-Restart the rainmeter-native binary, and your custom Wayland widget will appear on the desktop!
+```bash
+cmake -B build
+cmake --build build -j4
+python3 ./launcher_gui.py
+```

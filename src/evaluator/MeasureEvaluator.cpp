@@ -375,6 +375,10 @@ void LegacyMeasure::update(const IniLexer& skin, double dtMs, std::function<void
       }
       state_.numeric += (state_.targetNumeric - state_.numeric) * (dtMs / 100.0);
       state_.current = std::to_string(static_cast<long long>(state_.numeric));
+      {
+        double maxVal = (state_.maxValue > 1.0) ? state_.maxValue : 1048576.0;
+        state_.percent = std::clamp(state_.numeric / maxVal, 0.0, 1.0);
+      }
       break;
     }
 
@@ -395,6 +399,10 @@ void LegacyMeasure::update(const IniLexer& skin, double dtMs, std::function<void
       }
       state_.numeric += (state_.targetNumeric - state_.numeric) * (dtMs / 100.0);
       state_.current = std::to_string(static_cast<long long>(state_.numeric));
+      {
+        double maxVal = (state_.maxValue > 1.0) ? state_.maxValue : 1048576.0;
+        state_.percent = std::clamp(state_.numeric / maxVal, 0.0, 1.0);
+      }
       break;
     }
 
@@ -412,6 +420,7 @@ void LegacyMeasure::update(const IniLexer& skin, double dtMs, std::function<void
       sysmeasure::DiskInfo d = sysmeasure::readDisk(state_.drive);
       state_.numeric = d.usedPercent;
       state_.current = formatDouble(state_.numeric);
+      state_.percent = std::clamp(state_.numeric / 100.0, 0.0, 1.0);
       break;
     }
 
@@ -565,7 +574,10 @@ void LegacyMeasure::update(const IniLexer& skin, double dtMs, std::function<void
 
 void MeasureEvaluator::loadFrom(const IniLexer &skin) {
   measures_.clear();
-  for (const auto &[section, keys] : skin.data()) {
+  for (const std::string &section : skin.sectionOrder()) {
+    auto dataIt = skin.data().find(section);
+    if (dataIt == skin.data().end()) continue;
+    const auto &keys = dataIt->second;
     auto measureIt = keys.find("Measure");
     if (measureIt == keys.end()) continue;
     

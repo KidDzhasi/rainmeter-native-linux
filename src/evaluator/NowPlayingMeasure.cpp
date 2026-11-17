@@ -37,10 +37,11 @@ MprisTrackInfo NowPlayingBackend::getTrackInfo() {
 }
 
 void NowPlayingBackend::sendCommand(const std::string& command) {
-    // Basic implementation for PlayPause/Next/Previous
-    // We could use GDBus for this too, but for now we fallback or implement standard calls
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (currentTrack_.activePlayer.empty()) return;
+    std::string targetPlayer;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        targetPlayer = currentTrack_.activePlayer;
+    }
 
     GError* error = nullptr;
     GDBusConnection* conn = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &error);
@@ -49,16 +50,51 @@ void NowPlayingBackend::sendCommand(const std::string& command) {
         return;
     }
 
+    if (targetPlayer.empty()) {
+        GVariant* namesResult = g_dbus_connection_call_sync(
+            conn, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+            "org.freedesktop.DBus", "ListNames", nullptr,
+            G_VARIANT_TYPE("(as)"), G_DBUS_CALL_FLAGS_NONE, -1, nullptr, nullptr
+        );
+        if (namesResult) {
+            GVariantIter* iter;
+            g_variant_get(namesResult, "(as)", &iter);
+            gchar* name;
+            while (g_variant_iter_loop(iter, "s", &name)) {
+                std::string sname(name);
+                if (sname.find("org.mpris.MediaPlayer2.") == 0) {
+                    targetPlayer = sname;
+                    break;
+                }
+            }
+            g_variant_iter_free(iter);
+            g_variant_unref(namesResult);
+        }
+    }
+
+    if (targetPlayer.empty()) {
+        g_object_unref(conn);
+        return;
+    }
+
+    std::string cmd = command;
+    while (!cmd.empty() && (cmd.front() == '"' || cmd.front() == ' ')) cmd.erase(0, 1);
+    while (!cmd.empty() && (cmd.back() == '"' || cmd.back() == ' ')) cmd.pop_back();
+    std::string lcmd = cmd;
+    toLower(lcmd);
+
     std::string method = "";
-    if (command == "PlayPause") method = "PlayPause";
-    else if (command == "Next") method = "Next";
-    else if (command == "Previous") method = "Previous";
-    // SetPosition is more complex, skipped for brevity in this simplified direct DBus port
+    if (lcmd == "playpause") method = "PlayPause";
+    else if (lcmd == "next") method = "Next";
+    else if (lcmd == "previous" || lcmd == "prev") method = "Previous";
+    else if (lcmd == "play") method = "Play";
+    else if (lcmd == "pause") method = "Pause";
+    else if (lcmd == "stop") method = "Stop";
 
     if (!method.empty()) {
         GVariant* result = g_dbus_connection_call_sync(
             conn,
-            currentTrack_.activePlayer.c_str(),
+            targetPlayer.c_str(),
             "/org/mpris/MediaPlayer2",
             "org.mpris.MediaPlayer2.Player",
             method.c_str(),
@@ -70,6 +106,38 @@ void NowPlayingBackend::sendCommand(const std::string& command) {
             nullptr
         );
         if (result) g_variant_unref(result);
+    } else if (lcmd == "shuffle") {
+        GVariant* curVal = g_dbus_connection_call_sync(
+            conn, targetPlayer.c_str(), "/org/mpris/MediaPlayer2",
+            "org.freedesktop.DBus.Properties", "Get",
+            g_variant_new("(ss)", "org.mpris.MediaPlayer2.Player", "Shuffle"),
+            G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, -1, nullptr, nullptr
+        );
+        bool nextShuffle = true;
+        if (curVal) {
+            GVariant* inner = nullptr;
+            g_variant_get(curVal, "(v)", &inner);
+            if (inner && g_variant_is_of_type(inner, G_VARIANT_TYPE_BOOLEAN)) {
+                nextShuffle = !g_variant_get_boolean(inner);
+            }
+            if (inner) g_variant_unref(inner);
+            g_variant_unref(curVal);
+        }
+        GVariant* res = g_dbus_connection_call_sync(
+            conn, targetPlayer.c_str(), "/org/mpris/MediaPlayer2",
+            "org.freedesktop.DBus.Properties", "Set",
+            g_variant_new("(ssv)", "org.mpris.MediaPlayer2.Player", "Shuffle", g_variant_new_boolean(nextShuffle)),
+            nullptr, G_DBUS_CALL_FLAGS_NONE, -1, nullptr, nullptr
+        );
+        if (res) g_variant_unref(res);
+    } else if (lcmd == "repeat") {
+        GVariant* res = g_dbus_connection_call_sync(
+            conn, targetPlayer.c_str(), "/org/mpris/MediaPlayer2",
+            "org.freedesktop.DBus.Properties", "Set",
+            g_variant_new("(ssv)", "org.mpris.MediaPlayer2.Player", "LoopStatus", g_variant_new_string("Playlist")),
+            nullptr, G_DBUS_CALL_FLAGS_NONE, -1, nullptr, nullptr
+        );
+        if (res) g_variant_unref(res);
     }
     g_object_unref(conn);
 }
@@ -87,7 +155,7 @@ void NowPlayingBackend::workerThread() {
     while (running_) {
         MprisTrackInfo info;
         
-        // 1. List names to find an active player
+        // 1. List names to find all MPRIS players and pick the best active one
         GVariant* namesResult = g_dbus_connection_call_sync(
             conn,
             "org.freedesktop.DBus",
@@ -103,6 +171,7 @@ void NowPlayingBackend::workerThread() {
         );
 
         std::string activePlayer;
+        int bestState = -1; // 1 = Playing (best), 2 = Paused, 0 = Stopped
         if (namesResult) {
             GVariantIter* iter;
             g_variant_get(namesResult, "(as)", &iter);
@@ -110,8 +179,35 @@ void NowPlayingBackend::workerThread() {
             while (g_variant_iter_loop(iter, "s", &name)) {
                 std::string sname(name);
                 if (sname.find("org.mpris.MediaPlayer2.") == 0) {
-                    activePlayer = sname;
-                    break;
+                    int st = 0;
+                    GVariant* statusResult = g_dbus_connection_call_sync(
+                        conn, sname.c_str(), "/org/mpris/MediaPlayer2",
+                        "org.freedesktop.DBus.Properties", "Get",
+                        g_variant_new("(ss)", "org.mpris.MediaPlayer2.Player", "PlaybackStatus"),
+                        G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, -1, nullptr, nullptr
+                    );
+                    if (statusResult) {
+                        GVariant* inner = nullptr;
+                        g_variant_get(statusResult, "(v)", &inner);
+                        if (inner && g_variant_is_of_type(inner, G_VARIANT_TYPE_STRING)) {
+                            std::string s(g_variant_get_string(inner, nullptr));
+                            if (s == "Playing") st = 1;
+                            else if (s == "Paused") st = 2;
+                        }
+                        if (inner) g_variant_unref(inner);
+                        g_variant_unref(statusResult);
+                    }
+                    if (st == 1) {
+                        activePlayer = sname;
+                        bestState = 1;
+                        break;
+                    } else if (st == 2 && bestState != 1) {
+                        activePlayer = sname;
+                        bestState = 2;
+                    } else if (activePlayer.empty()) {
+                        activePlayer = sname;
+                        bestState = st;
+                    }
                 }
             }
             g_variant_iter_free(iter);
@@ -120,30 +216,7 @@ void NowPlayingBackend::workerThread() {
 
         if (!activePlayer.empty()) {
             info.activePlayer = activePlayer;
-            
-            // 2. Query PlaybackStatus
-            GVariant* statusResult = g_dbus_connection_call_sync(
-                conn, activePlayer.c_str(), "/org/mpris/MediaPlayer2",
-                "org.freedesktop.DBus.Properties", "Get",
-                g_variant_new("(ss)", "org.mpris.MediaPlayer2.Player", "PlaybackStatus"),
-                G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, -1, nullptr, nullptr
-            );
-
-            if (statusResult) {
-                GVariant* inner = nullptr;
-                g_variant_get(statusResult, "(v)", &inner);
-                if (inner) {
-                    const gchar* statusStr = g_variant_get_string(inner, nullptr);
-                    if (statusStr) {
-                        std::string s(statusStr);
-                        if (s == "Playing") info.state = 1;
-                        else if (s == "Paused") info.state = 2;
-                        else info.state = 0;
-                    }
-                    g_variant_unref(inner);
-                }
-                g_variant_unref(statusResult);
-            }
+            info.state = (bestState >= 0) ? bestState : 0;
 
             // 3. Query Metadata
             if (info.state != 0) {
@@ -163,7 +236,6 @@ void NowPlayingBackend::workerThread() {
                         gchar* key;
                         GVariant* value;
                         
-                        std::string lengthStr;
                         while (g_variant_iter_loop(dictIter, "{sv}", &key, &value)) {
                             std::string skey(key);
                             if (skey == "xesam:title" && g_variant_is_of_type(value, G_VARIANT_TYPE_STRING)) {
@@ -173,30 +245,30 @@ void NowPlayingBackend::workerThread() {
                                 g_variant_get(value, "as", &arrayIter);
                                 gchar* artistName;
                                 if (g_variant_iter_loop(arrayIter, "s", &artistName)) {
-                                    info.artist = artistName; // Just take the first artist
+                                    info.artist = artistName;
                                 }
                                 g_variant_iter_free(arrayIter);
                             } else if (skey == "xesam:album" && g_variant_is_of_type(value, G_VARIANT_TYPE_STRING)) {
                                 info.album = g_variant_get_string(value, nullptr);
                             } else if (skey == "mpris:artUrl" && g_variant_is_of_type(value, G_VARIANT_TYPE_STRING)) {
                                 std::string artUrl = g_variant_get_string(value, nullptr);
-                                info.coverUrl = "/tmp/rainmeter_cover.png";
-                                
-                                if (!artUrl.empty() && artUrl != lastArtUrl) {
-                                    lastArtUrl = artUrl;
-                                    std::string cmd;
-                                    if (artUrl.rfind("file://", 0) == 0) {
-                                        std::string localPath = artUrl.substr(7);
-                                        cmd = "convert \"" + localPath + "\" -resize 256x256 /tmp/rainmeter_cover.png 2>/dev/null";
-                                    } else if (artUrl.rfind("http://", 0) == 0 || artUrl.rfind("https://", 0) == 0) {
-                                        cmd = "curl -s \"" + artUrl + "\" | convert - -resize 256x256 /tmp/rainmeter_cover.png 2>/dev/null";
-                                    }
-                                    if (!cmd.empty()) {
-                                        system(cmd.c_str());
+                                if (artUrl.rfind("file://", 0) == 0) {
+                                    info.coverUrl = artUrl.substr(7);
+                                } else if (!artUrl.empty()) {
+                                    info.coverUrl = "/tmp/rainmeter_cover.png";
+                                    if (artUrl != lastArtUrl && (artUrl.rfind("http://", 0) == 0 || artUrl.rfind("https://", 0) == 0)) {
+                                        lastArtUrl = artUrl;
+                                        std::string cmd = "curl -sL \"" + artUrl + "\" -o /tmp/rainmeter_cover.png 2>/dev/null";
+                                        int r = system(cmd.c_str());
+                                        (void)r;
                                     }
                                 }
-                            } else if (skey == "mpris:length" && g_variant_is_of_type(value, G_VARIANT_TYPE_UINT64)) {
-                                info.duration = static_cast<double>(g_variant_get_uint64(value)) / 1000000.0;
+                            } else if (skey == "mpris:length") {
+                                if (g_variant_is_of_type(value, G_VARIANT_TYPE_UINT64)) {
+                                    info.duration = static_cast<double>(g_variant_get_uint64(value)) / 1000000.0;
+                                } else if (g_variant_is_of_type(value, G_VARIANT_TYPE_INT64)) {
+                                    info.duration = static_cast<double>(g_variant_get_int64(value)) / 1000000.0;
+                                }
                             }
                         }
                         g_variant_iter_free(dictIter);
@@ -217,25 +289,35 @@ void NowPlayingBackend::workerThread() {
                     GVariant* inner = nullptr;
                     g_variant_get(posResult, "(v)", &inner);
                     if (inner) {
-                        info.position = static_cast<double>(g_variant_get_int64(inner)) / 1000000.0;
+                        if (g_variant_is_of_type(inner, G_VARIANT_TYPE_INT64)) {
+                            info.position = static_cast<double>(g_variant_get_int64(inner)) / 1000000.0;
+                        } else if (g_variant_is_of_type(inner, G_VARIANT_TYPE_UINT64)) {
+                            info.position = static_cast<double>(g_variant_get_uint64(inner)) / 1000000.0;
+                        }
                         g_variant_unref(inner);
                     }
                     g_variant_unref(posResult);
                 }
 
                 if (info.duration > 0.0) {
-                    info.progress = (info.position / info.duration) * 100.0;
+                    info.progress = std::clamp((info.position / info.duration) * 100.0, 0.0, 100.0);
                 } else {
                     info.progress = 0.0;
                 }
 
                 if (info.title.empty()) info.title = "Unknown Title";
                 if (info.artist.empty()) info.artist = "Unknown Artist";
+                if (info.album.empty()) info.album = "Single";
+            } else {
+                info.title = "Media Paused / Stopped";
+                info.artist = "Click Play to Resume";
+                info.album = "Trad Rainmeter Media";
             }
         } else {
             info.state = 0;
             info.title = "No Media Playing";
-            info.artist = "";
+            info.artist = "Start Spotify, Browser, or Music App";
+            info.album = "Trad Rainmeter Media";
             info.coverUrl = "";
         }
 
@@ -244,7 +326,7 @@ void NowPlayingBackend::workerThread() {
             currentTrack_ = info;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
     g_object_unref(conn);
@@ -253,9 +335,15 @@ void NowPlayingBackend::workerThread() {
 void NowPlayingMeasure::onLoad(const IniLexer& skin, const std::string& section) {
     name_ = section;
     playerType_ = skin.getOr(section, "PlayerType", "");
+    std::string ptype = playerType_;
+    toLower(ptype);
+    if (ptype == "progress") {
+        maxValue_ = 100.0;
+    }
 }
 
 void NowPlayingMeasure::onUpdate(const IniLexer& skin, std::function<void(const std::string&)> executeBangs) {
+    (void)executeBangs;
     if (dynamicVariables_) {
         playerType_ = skin.getOr(name_, "PlayerType", playerType_);
     }
@@ -264,6 +352,16 @@ void NowPlayingMeasure::onUpdate(const IniLexer& skin, std::function<void(const 
     
     std::string ptype = playerType_;
     toLower(ptype);
+
+    auto formatTime = [](double sec) -> std::string {
+        if (sec < 0.0 || !std::isfinite(sec)) sec = 0.0;
+        int totalSec = static_cast<int>(sec);
+        int mins = totalSec / 60;
+        int secs = totalSec % 60;
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%d:%02d", mins, secs);
+        return buf;
+    };
 
     if (ptype == "title") {
         current_ = info.title;
@@ -276,11 +374,27 @@ void NowPlayingMeasure::onUpdate(const IniLexer& skin, std::function<void(const 
     } else if (ptype == "state") {
         numeric_ = info.state;
         current_ = std::to_string(static_cast<long long>(numeric_));
-    } else if (ptype == "progress" || ptype == "position") {
+    } else if (ptype == "isplaying") {
+        numeric_ = (info.state == 1) ? 1.0 : 0.0;
+        current_ = (info.state == 1) ? "1" : "0";
+    } else if (ptype == "ispaused") {
+        numeric_ = (info.state == 1) ? 0.0 : 1.0;
+        current_ = (info.state == 1) ? "0" : "1";
+    } else if (ptype == "statebutton" || ptype == "playpauseicon") {
+        numeric_ = info.state;
+        current_ = (info.state == 1) ? "||" : "▶";
+    } else if (ptype == "progress") {
+        maxValue_ = 100.0;
         numeric_ = info.progress;
-        
         char buf[64];
         std::snprintf(buf, sizeof(buf), "%.1f", numeric_);
         current_ = buf;
+    } else if (ptype == "position") {
+        maxValue_ = std::max(1.0, info.duration);
+        numeric_ = info.position;
+        current_ = formatTime(info.position);
+    } else if (ptype == "duration") {
+        numeric_ = info.duration;
+        current_ = formatTime(info.duration);
     }
 }

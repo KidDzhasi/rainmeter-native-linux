@@ -78,6 +78,7 @@ private:
 
   // --- Scene painting (migrated from main.cpp anonymous namespace) ---
   void paintScene();
+  void computeWindowPosition(int winW, int winH, int &outX, int &outY) const;
 
   // --- Coordinate / value resolution helpers ---
   static double resolveNum(const IniLexer &skin, const MeasureEvaluator *measures, const MathParser &math,
@@ -111,6 +112,18 @@ private:
   bool active_ = true;
   int targetWidth_ = -1;
   int targetHeight_ = -1;
+  int unscaledWidth_ = 260;
+  int unscaledHeight_ = 200;
   int windowX_ = 0;
   int windowY_ = 0;
+  int monitorIndex_ = 0;
+  int baseOffsetX_ = 0;
+  int baseOffsetY_ = 0;
+  bool hasExplicitX_ = false;
+  bool hasExplicitY_ = false;
+  std::string anchorX_ = "left";
+  std::string anchorY_ = "top";
+  double userScale_ = 0.0;
+  double effectiveScale_ = 1.0;
+  bool autoFit_ = false;
 };
