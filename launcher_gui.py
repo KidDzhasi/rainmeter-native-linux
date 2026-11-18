@@ -5731,8 +5731,8 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
 class RainmeterControlApp(Adw.Application):
     def __init__(self):
         super().__init__(
-            application_id="io.github.rainmeter_native.ControlCenter",
-            flags=Gio.ApplicationFlags.FLAGS_NONE,
+            application_id="com.github.kiddzhasi.TradRainmeter",
+            flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
 
     def do_activate(self):
@@ -5747,8 +5747,8 @@ class RainmeterControlApp(Adw.Application):
 class WeatherPopupApp(Adw.Application):
     def __init__(self):
         super().__init__(
-            application_id="io.github.trad_rainmeter.WeatherForecast",
-            flags=Gio.ApplicationFlags.FLAGS_NONE,
+            application_id="com.github.kiddzhasi.TradRainmeter.Weather",
+            flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
 
     def do_activate(self):
