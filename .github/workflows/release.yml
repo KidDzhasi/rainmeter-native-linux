@@ -54,6 +54,15 @@ jobs:
 
           python3 -c 'import zipfile, os; src="gnome-extension/trad-rainmeter@kiddzhasi.github.com"; z=zipfile.ZipFile("dist/trad-rainmeter@kiddzhasi.github.com.shell-extension.zip","w",zipfile.ZIP_DEFLATED); [z.write(os.path.join(src,f), f) for f in sorted(os.listdir(src))]; z.close()'
 
+      - name: 📦 Build Flatpak Bundle
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak
+          sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y flathub org.gnome.Platform/x86_64/51 org.gnome.Sdk/x86_64/51
+          chmod +x scripts/build-flatpak.sh
+          ./scripts/build-flatpak.sh
+
       - name: 🚀 Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -62,4 +71,5 @@ jobs:
             dist/trad-rainmeter_*.deb
             dist/trad-rainmeter-linux-x86_64.tar.gz
             dist/trad-rainmeter@kiddzhasi.github.com.shell-extension.zip
+            dist/trad-rainmeter.flatpak
           generate_release_notes: true
