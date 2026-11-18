@@ -69,6 +69,8 @@ if(WAYLAND_PROTOCOLS_FOUND)
 else()
     set(WAYLAND_PROTOCOLS_DIR "/usr/share/wayland-protocols")
 endif()
+string(REGEX REPLACE "^//+" "/" WAYLAND_PROTOCOLS_DIR "${WAYLAND_PROTOCOLS_DIR}")
+string(REGEX REPLACE "/+$" "" WAYLAND_PROTOCOLS_DIR "${WAYLAND_PROTOCOLS_DIR}")
 
 set(XDG_SHELL_XML
     "${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml")
@@ -114,8 +116,14 @@ add_custom_command(
     VERBATIM)
 
 # --- Wayland protocol code generation (fractional-scale, viewporter, xdg-output) ---
-set(FRACTIONAL_SCALE_XML
+set(SYSTEM_FRACTIONAL_SCALE_XML
     "${WAYLAND_PROTOCOLS_DIR}/staging/fractional-scale/fractional-scale-v1.xml")
+if(EXISTS "${SYSTEM_FRACTIONAL_SCALE_XML}")
+    set(FRACTIONAL_SCALE_XML "${SYSTEM_FRACTIONAL_SCALE_XML}")
+else()
+    set(FRACTIONAL_SCALE_XML
+        "${CMAKE_CURRENT_SOURCE_DIR}/protocols/fractional-scale-v1.xml")
+endif()
 set(FRACTIONAL_SCALE_HEADER
     "${PROTO_DIR}/fractional-scale-v1-client-protocol.h")
 set(FRACTIONAL_SCALE_SOURCE
