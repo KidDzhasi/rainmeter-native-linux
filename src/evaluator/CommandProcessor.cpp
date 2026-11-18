@@ -9,6 +9,7 @@ InputTextState g_InputState;
 #include "MathParser.hpp"
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <vector>
 
@@ -219,6 +220,19 @@ BangResult CommandProcessor::execute(const std::string &bangString,
              NowPlayingBackend::getInstance().sendCommand(measureCmd);
          }
       }
+    } else if (cmd == "!WEATHERPOPUP") {
+      std::error_code ec;
+      std::filesystem::path exePath = std::filesystem::read_symlink("/proc/self/exe", ec);
+      std::filesystem::path guiPath = std::filesystem::current_path(ec) / "launcher_gui.py";
+      if (!exePath.empty()) {
+          std::filesystem::path candidate = exePath.parent_path().parent_path() / "launcher_gui.py";
+          if (std::filesystem::exists(candidate, ec)) {
+              guiPath = candidate;
+          }
+      }
+      std::string sysCmd = "python3 \"" + guiPath.string() + "\" --weather-popup >/dev/null 2>&1 &";
+      int ret = std::system(sysCmd.c_str());
+      (void)ret;
     } else if (cmd == "!DEACTIVATECONFIG") {
       result.deactivateConfig = true;
     } else {

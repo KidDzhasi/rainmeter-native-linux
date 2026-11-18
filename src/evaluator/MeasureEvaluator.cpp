@@ -63,6 +63,7 @@ std::string resolveVariables(const IniLexer &skin, const std::string &text) {
 #include "CpuMeasure.hpp"
 #include "PhysicalMemoryMeasure.hpp"
 #include "BatteryMeasure.hpp"
+#include "WeatherMeasure.hpp"
 
 enum class Type {
     Unknown, Time, Cpu, PhysicalMemory, SwapMemory, FreeDiskSpace, NetIn, NetOut, Uptime, Calc, WebParser, Plugin, Script, ActionTimerType, UsageMonitorType, CoreTempType, HwInfoType, AudioLevelType, PowerPluginType, InputTextType
@@ -597,6 +598,8 @@ void MeasureEvaluator::loadFrom(const IniLexer &skin) {
         measure = std::make_shared<BatteryMeasure>();
     } else if (kind == "NowPlaying" || plugin == "nowplaying" || plugin == "nowplaying.dll" || plugin == "webnowplaying" || plugin == "webnowplaying.dll") {
         measure = std::make_shared<NowPlayingMeasure>();
+    } else if (kind == "Weather" || plugin == "tradweather" || plugin == "tradweather.dll") {
+        measure = std::make_shared<WeatherMeasure>();
     } else {
         auto leg = std::make_shared<LegacyMeasure>(this, section);
         measure = leg;

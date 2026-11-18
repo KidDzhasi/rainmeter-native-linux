@@ -1,11 +1,11 @@
 [Variables]
-ThemeName=Neon Blue (GNOME Edge)
-ShapeName=Soft Squircle (iOS / macOS Style)
+ThemeName=Sapphire & Amber
+ShapeName=Floating Borderless (HUD Only)
 DesignStyle=circular
-CornerRadius=24
-BgFill=Fill LinearGradient 135 | 14,18,28,235 | 6,8,14,245
-BorderStroke=StrokeWidth 2 | Stroke Color 0,175,255,235
-AccentColor=0,195,255,255
-TextColor=240,248,255,255
-SubTextColor=130,185,235,255
-TrackColor=20,32,52,255
+CornerRadius=0
+BgFill=Fill Color 0,0,0,0
+BorderStroke=StrokeWidth 0 | Stroke Color 0,0,0,0
+AccentColor=255,185,45,255
+TextColor=242,246,255,255
+SubTextColor=145,185,245,240
+TrackColor=22,34,62,230

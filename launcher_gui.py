@@ -20,6 +20,9 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
+import urllib.parse
+import urllib.request
 import zipfile
 
 import gi
@@ -40,10 +43,12 @@ ENGINE_BIN = os.path.join(BUILD_DIR, "rainmeter-native")
 SUITES_DIR = os.path.join(REPO_DIR, "suites")
 WIDGETS_DIR = os.path.join(REPO_DIR, "widgets")
 THEME_INC_PATH = os.path.join(WIDGETS_DIR, "Theme.inc")
+WEATHER_INC_PATH = os.path.join(WIDGETS_DIR, "Weather.inc")
 COMMUNITY_DIR = os.path.join(REPO_DIR, "community")
 CONFIG_DIR = os.path.expanduser("~/.config/rainmeter-native")
 USER_SKINS_DIR = os.path.join(CONFIG_DIR, "Skins")
 GLOBAL_CONFIG = os.path.join(CONFIG_DIR, "Rainmeter.ini")
+WEATHER_LOCATIONS_PATH = os.path.join(CONFIG_DIR, "weather_locations.json")
 
 # ---------------------------------------------------------------------------
 # Basic Widgets Theme Presets (inspired by the desktop theme gallery)
@@ -318,6 +323,362 @@ def write_basic_theme(theme_dict, shape_dict=None, design_dict=None):
     )
     with open(THEME_INC_PATH, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+DEFAULT_WEATHER_LOCATIONS = [
+    {"name": "Johannesburg, South Africa", "lat": -26.2041, "lon": 28.0473},
+    {"name": "Pretoria, South Africa", "lat": -25.7479, "lon": 28.2293},
+    {"name": "Polokwane, Limpopo", "lat": -23.9045, "lon": 29.4689},
+    {"name": "Giyani, Limpopo", "lat": -23.3025, "lon": 30.7187},
+    {"name": "Cape Town, South Africa", "lat": -33.9249, "lon": 18.4241},
+    {"name": "London, United Kingdom", "lat": 51.5072, "lon": -0.1276},
+    {"name": "New York, USA", "lat": 40.7128, "lon": -74.0060},
+]
+
+
+def load_weather_config():
+    """Return (locations, active_idx, units) synced between weather_locations.json and Weather.inc."""
+    locations = [dict(x) for x in DEFAULT_WEATHER_LOCATIONS]
+    active_idx = 0
+    units = "metric"
+
+    if os.path.isfile(WEATHER_LOCATIONS_PATH):
+        try:
+            with open(WEATHER_LOCATIONS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            saved = data.get("locations", [])
+            valid = []
+            for item in saved:
+                if "name" in item and "lat" in item and "lon" in item:
+                    valid.append(
+                        {
+                            "name": str(item["name"]).strip(),
+                            "lat": float(item["lat"]),
+                            "lon": float(item["lon"]),
+                        }
+                    )
+            if valid:
+                locations = valid
+            active_idx = max(0, min(len(locations) - 1, int(data.get("active_index", 0))))
+            if data.get("units") in ("metric", "imperial"):
+                units = data["units"]
+        except Exception:
+            pass
+
+    if os.path.isfile(WEATHER_INC_PATH):
+        try:
+            inc_name, inc_lat, inc_lon = None, None, None
+            with open(WEATHER_INC_PATH, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    sline = line.strip()
+                    if sline.startswith("WeatherLocation="):
+                        inc_name = sline.split("=", 1)[1].strip()
+                    elif sline.startswith("WeatherLat="):
+                        inc_lat = float(sline.split("=", 1)[1].strip())
+                    elif sline.startswith("WeatherLon="):
+                        inc_lon = float(sline.split("=", 1)[1].strip())
+                    elif sline.startswith("WeatherUnits="):
+                        u = sline.split("=", 1)[1].strip().lower()
+                        if u in ("metric", "imperial"):
+                            units = u
+            if inc_name and inc_lat is not None and inc_lon is not None:
+                found = next(
+                    (
+                        i
+                        for i, loc in enumerate(locations)
+                        if loc["name"].lower() == inc_name.lower()
+                        or (abs(loc["lat"] - inc_lat) < 0.002 and abs(loc["lon"] - inc_lon) < 0.002)
+                    ),
+                    None,
+                )
+                if found is not None:
+                    active_idx = found
+                else:
+                    locations.insert(0, {"name": inc_name, "lat": inc_lat, "lon": inc_lon})
+                    active_idx = 0
+        except Exception:
+            pass
+
+    return locations, active_idx, units
+
+
+def save_weather_config(locations, active_idx, units):
+    """Persist weather_locations.json and write widgets/Weather.inc."""
+    if not locations:
+        locations = [dict(DEFAULT_WEATHER_LOCATIONS[0])]
+    active_idx = max(0, min(len(locations) - 1, int(active_idx)))
+    units = "imperial" if units == "imperial" else "metric"
+
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(WEATHER_LOCATIONS_PATH, "w", encoding="utf-8") as f:
+        json.dump(
+            {"active_index": active_idx, "units": units, "locations": locations},
+            f,
+            indent=2,
+        )
+
+    loc = locations[active_idx]
+    os.makedirs(WIDGETS_DIR, exist_ok=True)
+    inc_content = (
+        "[Variables]\n"
+        f"WeatherLocation={loc['name']}\n"
+        f"WeatherLat={loc['lat']:.4f}\n"
+        f"WeatherLon={loc['lon']:.4f}\n"
+        f"WeatherUnits={units}\n"
+    )
+    with open(WEATHER_INC_PATH, "w", encoding="utf-8") as f:
+        f.write(inc_content)
+
+
+def search_weather_locations(query):
+    """Search cities, towns, and rural villages across ArcGIS, Open-Meteo, Nominatim, and Photon."""
+    q = query.strip()
+    if not q:
+        return []
+
+    results = []
+    seen_coords = set()
+
+    def _add(name, lat, lon, source, detail=""):
+        key = (round(float(lat), 3), round(float(lon), 3))
+        if key in seen_coords:
+            return
+        seen_coords.add(key)
+        results.append(
+            {
+                "name": name,
+                "lat": round(float(lat), 5),
+                "lon": round(float(lon), 5),
+                "source": source,
+                "detail": detail,
+            }
+        )
+
+    # Direct coordinate entry: e.g. "-23.312, 30.718" or "Mahatlani Village @ -23.312, 30.718"
+    coord_match = re.search(r"(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)", q)
+    if coord_match:
+        try:
+            lat_v = float(coord_match.group(1))
+            lon_v = float(coord_match.group(2))
+            if -90.0 <= lat_v <= 90.0 and -180.0 <= lon_v <= 180.0:
+                label_part = q[: coord_match.start()].strip(" @-:,")
+                label = label_part if label_part else f"Custom ({lat_v:.4f}, {lon_v:.4f})"
+                _add(label, lat_v, lon_v, "Direct Coordinates", "Exact latitude / longitude")
+                return results
+        except ValueError:
+            pass
+
+    # Build clean search variants (strip "Village" suffix first so village gazetteers match accurately)
+    stripped = re.sub(r"\bvillage\b", "", q, flags=re.IGNORECASE).strip(" ,")
+    queries = []
+    if stripped:
+        queries.append(stripped)
+    if q.lower() not in [x.lower() for x in queries]:
+        queries.append(q)
+
+    # 1. ArcGIS World Geocoder (accurate worldwide rural village & locality lookup, e.g. Mahatlani, Majosi, Masakona)
+    arcgis_candidates = []
+    for term in queries[:2]:
+        try:
+            url = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?" + urllib.parse.urlencode(
+                {
+                    "SingleLine": term,
+                    "f": "json",
+                    "maxLocations": 6,
+                    "outFields": "Match_addr,Place_addr,Type,Country",
+                }
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            for c in data.get("candidates", []):
+                score = float(c.get("score", 0))
+                loc = c.get("location", {})
+                attrs = c.get("attributes", {})
+                addr = attrs.get("Match_addr") or c.get("address") or term
+                place_addr = attrs.get("Place_addr") or ""
+                if "y" in loc and "x" in loc and score >= 75:
+                    arcgis_candidates.append((score, addr, loc["y"], loc["x"], place_addr))
+        except Exception:
+            pass
+    arcgis_candidates.sort(key=lambda item: item[0], reverse=True)
+    for score, addr, lat_v, lon_v, place_addr in arcgis_candidates:
+        detail = f"{place_addr} · match {score:.0f}%" if place_addr else f"match {score:.0f}%"
+        _add(addr, lat_v, lon_v, "ArcGIS Gazetteer", detail)
+
+    # 2. Open-Meteo Geocoding API (fast city/town lookup)
+    for term in queries:
+        try:
+            url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
+                {"name": term, "count": 5, "language": "en", "format": "json"}
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            for item in data.get("results", []):
+                parts = [item.get("name", "")]
+                if item.get("admin2"):
+                    parts.append(item["admin2"])
+                elif item.get("admin1"):
+                    parts.append(item["admin1"])
+                if item.get("country"):
+                    parts.append(item["country"])
+                label = ", ".join(p for p in parts if p)
+                detail = " · ".join(
+                    p
+                    for p in [item.get("admin1", ""), item.get("feature_code", "")]
+                    if p
+                )
+                _add(label, item["latitude"], item["longitude"], "Open-Meteo", detail)
+        except Exception:
+            pass
+        if len(results) >= 6:
+            break
+
+    # 3. OpenStreetMap Nominatim
+    if len(results) < 6:
+        for term in queries[:1]:
+            try:
+                url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
+                    {"q": term, "format": "json", "limit": 5, "addressdetails": 1}
+                )
+                req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+                with urllib.request.urlopen(req, timeout=6) as resp:
+                    items = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                for item in items:
+                    addr = item.get("address", {})
+                    primary = (
+                        addr.get("village")
+                        or addr.get("hamlet")
+                        or addr.get("town")
+                        or addr.get("city")
+                        or item.get("name")
+                        or item.get("display_name", "").split(",")[0]
+                    )
+                    region = addr.get("state") or addr.get("county") or ""
+                    country = addr.get("country") or ""
+                    label = ", ".join(p for p in [primary, region, country] if p)
+                    _add(label, item["lat"], item["lon"], "OpenStreetMap", item.get("display_name", ""))
+            except Exception:
+                pass
+
+    # 4. Komoot Photon (fuzzy fallback)
+    if len(results) < 5:
+        try:
+            url = "https://photon.komoot.io/api/?" + urllib.parse.urlencode({"q": queries[0], "limit": 5})
+            req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            for feat in data.get("features", []):
+                props = feat.get("properties", {})
+                coords = feat.get("geometry", {}).get("coordinates", [])
+                if len(coords) < 2:
+                    continue
+                lon_v, lat_v = coords[0], coords[1]
+                name = props.get("name", "")
+                if not name:
+                    continue
+                region = props.get("state") or props.get("city") or props.get("county") or ""
+                country = props.get("country") or ""
+                label = ", ".join(p for p in [name, region, country] if p)
+                detail = ", ".join(
+                    p for p in [props.get("osm_value", ""), props.get("county", "")] if p
+                )
+                _add(label, lat_v, lon_v, "Photon OSM", detail)
+        except Exception:
+            pass
+
+    return results[:10]
+
+
+WMO_WEATHER_MAP = {
+    0: ("Clear Sky", "weather-clear-symbolic"),
+    1: ("Mainly Clear", "weather-few-clouds-symbolic"),
+    2: ("Partly Cloudy", "weather-few-clouds-symbolic"),
+    3: ("Overcast", "weather-overcast-symbolic"),
+    45: ("Fog", "weather-fog-symbolic"),
+    48: ("Rime Fog", "weather-fog-symbolic"),
+    51: ("Light Drizzle", "weather-showers-scattered-symbolic"),
+    53: ("Drizzle", "weather-showers-scattered-symbolic"),
+    55: ("Heavy Drizzle", "weather-showers-symbolic"),
+    56: ("Freezing Drizzle", "weather-showers-scattered-symbolic"),
+    57: ("Freezing Drizzle", "weather-showers-symbolic"),
+    61: ("Light Rain", "weather-showers-scattered-symbolic"),
+    63: ("Rain", "weather-showers-symbolic"),
+    65: ("Heavy Rain", "weather-showers-symbolic"),
+    66: ("Freezing Rain", "weather-showers-symbolic"),
+    67: ("Freezing Rain", "weather-showers-symbolic"),
+    71: ("Light Snow", "weather-snow-symbolic"),
+    73: ("Snow", "weather-snow-symbolic"),
+    75: ("Heavy Snow", "weather-snow-symbolic"),
+    77: ("Snow Grains", "weather-snow-symbolic"),
+    80: ("Light Showers", "weather-showers-scattered-symbolic"),
+    81: ("Showers", "weather-showers-symbolic"),
+    82: ("Heavy Showers", "weather-showers-symbolic"),
+    85: ("Snow Showers", "weather-snow-symbolic"),
+    86: ("Heavy Snow Showers", "weather-snow-symbolic"),
+    95: ("Thunderstorm", "weather-storm-symbolic"),
+    96: ("Thunderstorm & Hail", "weather-storm-symbolic"),
+    99: ("Severe Storm", "weather-storm-symbolic"),
+}
+
+
+def wmo_info(code):
+    return WMO_WEATHER_MAP.get(int(code) if code is not None else -1, ("Variable Clouds", "weather-overcast-symbolic"))
+
+
+def wind_compass(deg):
+    dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    return dirs[int(((float(deg) + 11.25) % 360.0) // 22.5) % 16]
+
+
+def fetch_full_weather_forecast(lat, lon, units="metric"):
+    """Fetch current conditions, 24-hour hourly forecast, and 7-day daily forecast from Open-Meteo."""
+    params = {
+        "latitude": f"{lat:.4f}",
+        "longitude": f"{lon:.4f}",
+        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m,surface_pressure,is_day",
+        "hourly": "temperature_2m,precipitation_probability,weather_code",
+        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset",
+        "timezone": "auto",
+        "forecast_days": 7,
+    }
+    if units == "imperial":
+        params["temperature_unit"] = "fahrenheit"
+        params["wind_speed_unit"] = "mph"
+
+    url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+
+def relaunch_active_engine_from_config():
+    """Restart running desktop skins according to ~/.config/rainmeter-native/Rainmeter.ini."""
+    stop_engine()
+    if not os.path.isfile(GLOBAL_CONFIG) or not os.path.isfile(ENGINE_BIN):
+        return
+    active_keys = []
+    cp = configparser.ConfigParser(interpolation=None, strict=False)
+    cp.optionxform = str
+    try:
+        with open(GLOBAL_CONFIG, "r", encoding="utf-8", errors="ignore") as f:
+            cp.read_file(f)
+        for sec in cp.sections():
+            val = cp.get(sec, "Active", fallback="0").strip()
+            if val not in ("0", "false", ""):
+                active_keys.append(sec)
+    except Exception:
+        return
+    if active_keys:
+        subprocess.Popen(
+            [ENGINE_BIN] + active_keys,
+            cwd=REPO_DIR,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
 
 
 def apply_basic_widget_design(design_id):
@@ -2551,6 +2912,12 @@ class ControlCenterWindow(Adw.ApplicationWindow):
             self.basic_shape_idx,
             self.basic_design_idx,
         ) = read_current_basic_style()
+        (
+            self.weather_locations,
+            self.weather_active_idx,
+            self.weather_units,
+        ) = load_weather_config()
+        save_weather_config(self.weather_locations, self.weather_active_idx, self.weather_units)
 
         first_widget = next((s["key"] for s in self.skins if not s["is_suite"]), None)
         self.selected_key = first_widget or (self.skins[0]["key"] if self.skins else None)
@@ -2568,9 +2935,13 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         self.custom_suite_buttons = {}
         self.basic_switches = {}
         self.row_map = {}
+        self.weather_saved_rows = []
+        self.weather_search_rows = []
+        self._weather_search_results = []
 
         self._build_ui()
         self._populate_suites_tab()
+        self._populate_weather_locations_ui()
         self._populate_basic_widgets_tab()
         self._populate_widgets_tab()
         if self.selected_key:
@@ -2793,6 +3164,128 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         )
         basic_vbox.append(self.media_list_group)
         self.media_rows = []
+
+        # Weather Location & Village Manager Group
+        self.weather_group = Adw.PreferencesGroup(
+            title="Weather Location and Saved Villages / Cities",
+            description="Live weather powered by Open-Meteo. Select a saved place, search any city/town/village online, or add a custom village using coordinates.",
+        )
+        basic_vbox.append(self.weather_group)
+
+        # Active Location Dropdown Row
+        active_loc_row = Adw.ActionRow(
+            title="Active Weather Location",
+            subtitle=f"{self.weather_locations[self.weather_active_idx]['name']} ({self.weather_locations[self.weather_active_idx]['lat']:.4f}, {self.weather_locations[self.weather_active_idx]['lon']:.4f})",
+        )
+        self.weather_active_row = active_loc_row
+        loc_list = Gtk.StringList.new([loc["name"] for loc in self.weather_locations])
+        self.weather_dropdown = Gtk.DropDown(model=loc_list)
+        self.weather_dropdown.set_valign(Gtk.Align.CENTER)
+        self.weather_dropdown.set_selected(self.weather_active_idx)
+        self.weather_dropdown.connect("notify::selected", self._on_weather_location_selected)
+        active_loc_row.add_suffix(self.weather_dropdown)
+
+        forecast_btn = Gtk.Button(label="Full Forecast")
+        forecast_btn.set_valign(Gtk.Align.CENTER)
+        forecast_btn.connect("clicked", self._on_open_weather_forecast_clicked)
+        active_loc_row.add_suffix(forecast_btn)
+        self.weather_group.add(active_loc_row)
+
+        # Units Row (Metric / Imperial)
+        units_row = Adw.ActionRow(
+            title="Temperature and Wind Units",
+            subtitle="Switch between Celsius / km/h (Metric) and Fahrenheit / mph (Imperial)",
+        )
+        unit_model = Gtk.StringList.new(["Metric (°C, km/h)", "Imperial (°F, mph)"])
+        self.weather_units_dropdown = Gtk.DropDown(model=unit_model)
+        self.weather_units_dropdown.set_valign(Gtk.Align.CENTER)
+        self.weather_units_dropdown.set_selected(1 if self.weather_units == "imperial" else 0)
+        self.weather_units_dropdown.connect("notify::selected", self._on_weather_units_changed)
+        units_row.add_suffix(self.weather_units_dropdown)
+        self.weather_group.add(units_row)
+
+        # Search Row (Cities, Towns, Villages, or lat,lon)
+        search_row = Adw.ActionRow(
+            title="Search City, Town, or Village",
+            subtitle="Search online (e.g. Polokwane, Giyani, Mahlathini) or enter latitude, longitude (e.g. -23.31, 30.72)",
+        )
+        search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        search_box.set_valign(Gtk.Align.CENTER)
+        self.weather_search_entry = Gtk.Entry()
+        self.weather_search_entry.set_placeholder_text("Village or city name, or lat, lon…")
+        self.weather_search_entry.set_width_chars(24)
+        self.weather_search_entry.connect("activate", lambda _e: self._on_weather_search_clicked(None))
+        search_box.append(self.weather_search_entry)
+
+        self.weather_search_btn = Gtk.Button(label="Search")
+        self.weather_search_btn.add_css_class("suggested-action")
+        self.weather_search_btn.connect("clicked", self._on_weather_search_clicked)
+        search_box.append(self.weather_search_btn)
+        search_row.add_suffix(search_box)
+        self.weather_group.add(search_row)
+
+        # Manual Village / Custom Location Expander
+        self.manual_loc_expander = Adw.ExpanderRow(
+            title="Add Village or Custom Location Manually",
+            subtitle="Best for rural villages (e.g. Mahatlani Village) — enter display name and coordinates, or pick nearest town below and rename it here",
+        )
+        self.weather_group.add(self.manual_loc_expander)
+
+        manual_box_row = Adw.PreferencesRow()
+        manual_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        manual_box.set_margin_top(10)
+        manual_box.set_margin_bottom(10)
+        manual_box.set_margin_start(12)
+        manual_box.set_margin_end(12)
+        manual_box_row.set_child(manual_box)
+
+        name_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        manual_box.append(name_line)
+        lbl_name = Gtk.Label(label="Location Name:", xalign=0)
+        lbl_name.set_width_chars(14)
+        name_line.append(lbl_name)
+        self.manual_loc_name_entry = Gtk.Entry()
+        self.manual_loc_name_entry.set_placeholder_text("e.g. Mahatlani Village, Limpopo")
+        self.manual_loc_name_entry.set_hexpand(True)
+        name_line.append(self.manual_loc_name_entry)
+
+        coords_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        manual_box.append(coords_line)
+        lbl_lat = Gtk.Label(label="Latitude:", xalign=0)
+        lbl_lat.set_width_chars(14)
+        coords_line.append(lbl_lat)
+        self.manual_loc_lat_entry = Gtk.Entry()
+        self.manual_loc_lat_entry.set_placeholder_text("e.g. -23.3050")
+        self.manual_loc_lat_entry.set_hexpand(True)
+        coords_line.append(self.manual_loc_lat_entry)
+
+        lbl_lon = Gtk.Label(label="Longitude:", xalign=0)
+        coords_line.append(lbl_lon)
+        self.manual_loc_lon_entry = Gtk.Entry()
+        self.manual_loc_lon_entry.set_placeholder_text("e.g. 30.7180")
+        self.manual_loc_lon_entry.set_hexpand(True)
+        coords_line.append(self.manual_loc_lon_entry)
+
+        add_manual_btn = Gtk.Button(label="Add Village / Custom Location and Activate")
+        add_manual_btn.add_css_class("suggested-action")
+        add_manual_btn.connect("clicked", self._on_add_manual_weather_location)
+        manual_box.append(add_manual_btn)
+        self.manual_loc_expander.add_row(manual_box_row)
+
+        # Search Results Group (shown when search returns results)
+        self.weather_search_group = Adw.PreferencesGroup(
+            title="Location Search Results",
+            description="Click 'Add and Use' to activate immediately, or 'Rename' to label nearby town coordinates with your village name.",
+        )
+        self.weather_search_group.set_visible(False)
+        basic_vbox.append(self.weather_search_group)
+
+        # Saved Locations Expander / Group
+        self.weather_saved_expander = Adw.ExpanderRow(
+            title="Manage Saved Weather Locations",
+            subtitle=f"{len(self.weather_locations)} saved locations",
+        )
+        self.weather_group.add(self.weather_saved_expander)
 
         # Core 8 Modular Basic Widgets Group
         self.basic_list_group = Adw.PreferencesGroup(
@@ -3289,6 +3782,240 @@ class ControlCenterWindow(Adw.ApplicationWindow):
     def _on_jump_to_basic_position(self, _btn, key):
         self._select_widget(key)
         self.view_stack.set_visible_child_name("widgets")
+
+    # --- WEATHER LOCATION & VILLAGE MANAGER LOGIC ---
+    def _populate_weather_locations_ui(self):
+        self._updating_controls = True
+        try:
+            loc_model = Gtk.StringList.new([loc["name"] for loc in self.weather_locations])
+            self.weather_dropdown.set_model(loc_model)
+            self.weather_active_idx = max(0, min(len(self.weather_locations) - 1, self.weather_active_idx))
+            self.weather_dropdown.set_selected(self.weather_active_idx)
+
+            cur = self.weather_locations[self.weather_active_idx]
+            self.weather_active_row.set_subtitle(
+                GLib.markup_escape_text(f"{cur['name']} ({cur['lat']:.4f}, {cur['lon']:.4f})")
+            )
+
+            for r in self.weather_saved_rows:
+                self.weather_saved_expander.remove(r)
+            self.weather_saved_rows = []
+
+            self.weather_saved_expander.set_subtitle(
+                f"{len(self.weather_locations)} saved location{'s' if len(self.weather_locations) != 1 else ''}"
+            )
+
+            for idx, loc in enumerate(self.weather_locations):
+                is_cur = idx == self.weather_active_idx
+                row = Adw.ActionRow(
+                    title=GLib.markup_escape_text(loc["name"]),
+                    subtitle=f"Lat: {loc['lat']:.4f}, Lon: {loc['lon']:.4f}"
+                    + ("  •  Active" if is_cur else ""),
+                )
+                use_btn = Gtk.Button(label="Active ✓" if is_cur else "Use")
+                use_btn.set_valign(Gtk.Align.CENTER)
+                if is_cur:
+                    use_btn.add_css_class("suggested-action")
+                use_btn.connect("clicked", lambda _b, i=idx: self._set_active_weather_index(i))
+                row.add_suffix(use_btn)
+
+                if len(self.weather_locations) > 1:
+                    del_btn = Gtk.Button(icon_name="user-trash-symbolic")
+                    del_btn.set_valign(Gtk.Align.CENTER)
+                    del_btn.add_css_class("flat")
+                    del_btn.set_tooltip_text(f"Remove {loc['name']}")
+                    del_btn.connect("clicked", self._on_delete_weather_location, idx)
+                    row.add_suffix(del_btn)
+
+                self.weather_saved_expander.add_row(row)
+                self.weather_saved_rows.append(row)
+        finally:
+            self._updating_controls = False
+        return False
+
+    def _reload_if_weather_visible(self, toast_msg):
+        weather_active = any(
+            self.skin_state[s["key"]]["active"]
+            and (
+                "BasicWeather" in s["key"]
+                or any(
+                    suite in s["key"]
+                    for suite in ("TradSunset", "GreenRibbonSuite", "DashboardSuite", "TealMountainSuite")
+                )
+            )
+            for s in self.skins
+        )
+        if weather_active:
+            self._launch_active_items()
+        else:
+            self._show_toast(toast_msg)
+
+    def _set_active_weather_index(self, idx):
+        self.weather_active_idx = max(0, min(len(self.weather_locations) - 1, idx))
+        save_weather_config(self.weather_locations, self.weather_active_idx, self.weather_units)
+        GLib.idle_add(self._populate_weather_locations_ui)
+        cur = self.weather_locations[self.weather_active_idx]
+        self._reload_if_weather_visible(
+            f"Weather location set to '{cur['name']}' (enable BasicWeather to view)"
+        )
+
+    def _on_weather_location_selected(self, dropdown, _pspec):
+        if self._updating_controls:
+            return
+        idx = int(dropdown.get_selected())
+        if idx < 0 or idx >= len(self.weather_locations):
+            return
+        self._set_active_weather_index(idx)
+
+    def _on_weather_units_changed(self, dropdown, _pspec):
+        if self._updating_controls:
+            return
+        self.weather_units = "imperial" if int(dropdown.get_selected()) == 1 else "metric"
+        save_weather_config(self.weather_locations, self.weather_active_idx, self.weather_units)
+        self._reload_if_weather_visible(
+            f"Weather units set to {'Imperial (°F, mph)' if self.weather_units == 'imperial' else 'Metric (°C, km/h)'}"
+        )
+
+    def _on_weather_search_clicked(self, _btn):
+        query = self.weather_search_entry.get_text().strip()
+        if not query:
+            self._show_toast("Enter a village, town, city name, or coordinates to search")
+            return
+        self.weather_search_btn.set_sensitive(False)
+        self.weather_search_btn.set_label("Searching…")
+
+        def _worker():
+            results = search_weather_locations(query)
+
+            def _done():
+                self.weather_search_btn.set_sensitive(True)
+                self.weather_search_btn.set_label("Search")
+                self._weather_search_results = results
+                self._populate_weather_search_results(query)
+                return False
+
+            GLib.idle_add(_done)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _populate_weather_search_results(self, query=""):
+        for r in self.weather_search_rows:
+            self.weather_search_group.remove(r)
+        self.weather_search_rows = []
+
+        if not self._weather_search_results:
+            self.weather_search_group.set_visible(True)
+            empty_row = Adw.ActionRow(
+                title=GLib.markup_escape_text(f"No online match found for '{query}'"),
+                subtitle="Many rural villages are absent from online maps — search the nearest town (e.g. Giyani / Tzaneen / Makhado) and click Rename, or add your village manually above.",
+            )
+            open_manual_btn = Gtk.Button(label="Add Manually")
+            open_manual_btn.set_valign(Gtk.Align.CENTER)
+            open_manual_btn.add_css_class("suggested-action")
+            open_manual_btn.connect("clicked", self._on_open_manual_for_query, query)
+            empty_row.add_suffix(open_manual_btn)
+            self.weather_search_group.add(empty_row)
+            self.weather_search_rows.append(empty_row)
+            return False
+
+        self.weather_search_group.set_visible(True)
+        for res in self._weather_search_results:
+            sub = f"{res['source']} • Lat: {res['lat']:.4f}, Lon: {res['lon']:.4f}"
+            if res.get("detail"):
+                sub += f" • {res['detail']}"
+            row = Adw.ActionRow(
+                title=GLib.markup_escape_text(res["name"]),
+                subtitle=GLib.markup_escape_text(sub[:140]),
+            )
+
+            rename_btn = Gtk.Button(label="Rename & Add")
+            rename_btn.set_valign(Gtk.Align.CENTER)
+            rename_btn.set_tooltip_text("Copy coordinates into the Manual Village form so you can name it cleanly")
+            rename_btn.connect("clicked", self._on_prefill_manual_from_search, res)
+            row.add_suffix(rename_btn)
+
+            add_btn = Gtk.Button(label="Add & Use")
+            add_btn.set_valign(Gtk.Align.CENTER)
+            add_btn.add_css_class("suggested-action")
+            add_btn.connect("clicked", self._on_use_search_result, res)
+            row.add_suffix(add_btn)
+
+            self.weather_search_group.add(row)
+            self.weather_search_rows.append(row)
+        return False
+
+    def _on_open_manual_for_query(self, _btn, query):
+        if query:
+            self.manual_loc_name_entry.set_text(query)
+        self.manual_loc_expander.set_expanded(True)
+
+    def _on_prefill_manual_from_search(self, _btn, res):
+        typed = self.weather_search_entry.get_text().strip()
+        self.manual_loc_name_entry.set_text(typed if typed else res["name"])
+        self.manual_loc_lat_entry.set_text(f"{res['lat']:.5f}")
+        self.manual_loc_lon_entry.set_text(f"{res['lon']:.5f}")
+        self.manual_loc_expander.set_expanded(True)
+        self._show_toast("Coordinates copied — edit Name if needed and click Add Village")
+
+    def _add_or_select_location(self, name, lat, lon):
+        existing = next(
+            (
+                i
+                for i, loc in enumerate(self.weather_locations)
+                if loc["name"].lower() == name.lower()
+                or (abs(loc["lat"] - lat) < 0.002 and abs(loc["lon"] - lon) < 0.002 and loc["name"].lower() == name.lower())
+            ),
+            None,
+        )
+        if existing is not None:
+            self.weather_locations[existing] = {"name": name, "lat": lat, "lon": lon}
+            self.weather_active_idx = existing
+        else:
+            self.weather_locations.insert(0, {"name": name, "lat": lat, "lon": lon})
+            self.weather_active_idx = 0
+
+        save_weather_config(self.weather_locations, self.weather_active_idx, self.weather_units)
+        GLib.idle_add(self._populate_weather_locations_ui)
+        self._reload_if_weather_visible(f"Added & activated weather for '{name}'")
+
+    def _on_use_search_result(self, _btn, res):
+        self._add_or_select_location(res["name"], res["lat"], res["lon"])
+        GLib.idle_add(lambda: (self.weather_search_group.set_visible(False), False)[1])
+
+    def _on_add_manual_weather_location(self, _btn):
+        name = self.manual_loc_name_entry.get_text().strip()
+        lat_str = self.manual_loc_lat_entry.get_text().strip().replace(",", ".")
+        lon_str = self.manual_loc_lon_entry.get_text().strip().replace(",", ".")
+        if not name:
+            self._show_toast("Please enter a village or location name")
+            return
+        try:
+            lat = float(lat_str)
+            lon = float(lon_str)
+        except ValueError:
+            self._show_toast("Please enter valid numeric Latitude and Longitude")
+            return
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            self._show_toast("Latitude must be -90..90 and Longitude -180..180")
+            return
+
+        self.manual_loc_name_entry.set_text("")
+        self.manual_loc_lat_entry.set_text("")
+        self.manual_loc_lon_entry.set_text("")
+        self.manual_loc_expander.set_expanded(False)
+        self._add_or_select_location(name, lat, lon)
+
+    def _on_delete_weather_location(self, _btn, idx):
+        if len(self.weather_locations) <= 1 or idx < 0 or idx >= len(self.weather_locations):
+            return
+        removed = self.weather_locations.pop(idx)["name"]
+        if self.weather_active_idx >= len(self.weather_locations):
+            self.weather_active_idx = 0
+        elif idx < self.weather_active_idx:
+            self.weather_active_idx = max(0, self.weather_active_idx - 1)
+        save_weather_config(self.weather_locations, self.weather_active_idx, self.weather_units)
+        GLib.idle_add(self._populate_weather_locations_ui)
+        self._reload_if_weather_visible(f"Removed location '{removed}'")
 
     # --- SUITES TAB LOGIC ---
     def _populate_suites_tab(self):
@@ -4104,6 +4831,23 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         self._update_engine_status()
         self._show_toast("Engine stopped and desktop cleared")
 
+    def _on_open_weather_forecast_clicked(self, _btn):
+        def _on_location_updated():
+            (
+                self.weather_locations,
+                self.weather_active_idx,
+                self.weather_units,
+            ) = load_weather_config()
+            GLib.idle_add(self._populate_weather_locations_ui)
+            self._updating_controls = True
+            try:
+                self.weather_units_dropdown.set_selected(1 if self.weather_units == "imperial" else 0)
+            finally:
+                self._updating_controls = False
+
+        win = WeatherForecastWindow(self.get_application(), on_change_cb=_on_location_updated)
+        win.present()
+
     def _update_engine_status(self):
         pids = get_engine_pids()
         if pids:
@@ -4111,6 +4855,566 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         else:
             self.status_label.set_label("○ Stopped")
         return True
+
+
+class WeatherForecastWindow(Adw.ApplicationWindow):
+    """Expanded Full Weather Forecast + Location / Village Selector Window (triggered by clicking any weather widget)."""
+
+    def __init__(self, app, on_change_cb=None):
+        super().__init__(application=app)
+        self.on_change_cb = on_change_cb
+        self.set_title("Trad Rainmeter — Weather Forecast")
+        self.set_default_size(920, 700)
+
+        (
+            self.weather_locations,
+            self.weather_active_idx,
+            self.weather_units,
+        ) = load_weather_config()
+
+        self._updating = False
+        self._forecast_data = None
+        self._search_results = []
+        self._search_rows = []
+        self._daily_rows = []
+
+        self._build_ui()
+        self._refresh_forecast()
+
+    def _build_ui(self):
+        self.toast_overlay = Adw.ToastOverlay()
+        self.set_content(self.toast_overlay)
+
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.toast_overlay.set_child(root)
+
+        header = Adw.HeaderBar()
+        root.append(header)
+
+        refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
+        refresh_btn.set_tooltip_text("Refresh live weather forecast")
+        refresh_btn.connect("clicked", lambda _b: self._refresh_forecast())
+        header.pack_start(refresh_btn)
+
+        loc_model = Gtk.StringList.new([l["name"] for l in self.weather_locations])
+        self.loc_dropdown = Gtk.DropDown(model=loc_model)
+        self.loc_dropdown.set_selected(self.weather_active_idx)
+        self.loc_dropdown.connect("notify::selected", self._on_loc_dropdown_changed)
+        header.set_title_widget(self.loc_dropdown)
+
+        unit_model = Gtk.StringList.new(["°C", "°F"])
+        self.unit_dropdown = Gtk.DropDown(model=unit_model)
+        self.unit_dropdown.set_selected(1 if self.weather_units == "imperial" else 0)
+        self.unit_dropdown.connect("notify::selected", self._on_unit_changed)
+        header.pack_end(self.unit_dropdown)
+
+        add_loc_toggle = Gtk.ToggleButton(label="Add / Change Location")
+        add_loc_toggle.connect("toggled", self._on_toggle_add_panel)
+        header.pack_end(add_loc_toggle)
+        self.add_loc_toggle = add_loc_toggle
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        root.append(scroll)
+
+        clamp = Adw.Clamp(maximum_size=860)
+        scroll.set_child(clamp)
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        vbox.set_margin_top(18)
+        vbox.set_margin_bottom(24)
+        vbox.set_margin_start(18)
+        vbox.set_margin_end(18)
+        clamp.set_child(vbox)
+
+        # Collapsible Add / Search Location Drawer (Cities & Rural Villages)
+        self.add_drawer = Adw.PreferencesGroup(
+            title="Select or Add Location (Cities, Towns, and Villages)",
+            description="Search villages like Mahatlani, Majosi, Masakona, or enter custom coordinates.",
+        )
+        self.add_drawer.set_visible(False)
+        vbox.append(self.add_drawer)
+
+        search_row = Adw.ActionRow(
+            title="Search City, Town, or Village",
+            subtitle="Uses ArcGIS Gazetteer, Open-Meteo, and OpenStreetMap — or type lat, lon",
+        )
+        sbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        sbox.set_valign(Gtk.Align.CENTER)
+        self.search_entry = Gtk.Entry()
+        self.search_entry.set_placeholder_text("e.g. Mahatlani, Majosi, Masakona…")
+        self.search_entry.set_width_chars(24)
+        self.search_entry.connect("activate", lambda _e: self._on_search_clicked(None))
+        sbox.append(self.search_entry)
+
+        self.search_btn = Gtk.Button(label="Search")
+        self.search_btn.add_css_class("suggested-action")
+        self.search_btn.connect("clicked", self._on_search_clicked)
+        sbox.append(self.search_btn)
+        search_row.add_suffix(sbox)
+        self.add_drawer.add(search_row)
+
+        self.manual_expander = Adw.ExpanderRow(
+            title="Add Village or Location Manually (Name + Coordinates)",
+            subtitle="If your village is not auto-detected, enter a label and latitude/longitude",
+        )
+        self.add_drawer.add(self.manual_expander)
+
+        mbox_row = Adw.PreferencesRow()
+        mbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        mbox.set_margin_top(8)
+        mbox.set_margin_bottom(8)
+        mbox.set_margin_start(12)
+        mbox.set_margin_end(12)
+        mbox_row.set_child(mbox)
+
+        row1 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        mbox.append(row1)
+        row1.append(Gtk.Label(label="Name:", xalign=0))
+        self.manual_name = Gtk.Entry()
+        self.manual_name.set_placeholder_text("e.g. Mahatlani Village")
+        self.manual_name.set_hexpand(True)
+        row1.append(self.manual_name)
+
+        row2 = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        mbox.append(row2)
+        row2.append(Gtk.Label(label="Lat:"))
+        self.manual_lat = Gtk.Entry()
+        self.manual_lat.set_placeholder_text("-23.2420")
+        self.manual_lat.set_hexpand(True)
+        row2.append(self.manual_lat)
+        row2.append(Gtk.Label(label="Lon:"))
+        self.manual_lon = Gtk.Entry()
+        self.manual_lon.set_placeholder_text("30.2762")
+        self.manual_lon.set_hexpand(True)
+        row2.append(self.manual_lon)
+
+        save_manual_btn = Gtk.Button(label="Save Location & Show Forecast")
+        save_manual_btn.add_css_class("suggested-action")
+        save_manual_btn.connect("clicked", self._on_save_manual)
+        mbox.append(save_manual_btn)
+        self.manual_expander.add_row(mbox_row)
+
+        self.search_results_group = Adw.PreferencesGroup(title="Search Results")
+        self.search_results_group.set_visible(False)
+        vbox.append(self.search_results_group)
+
+        # Current Hero Summary Card
+        hero_frame = Gtk.Frame()
+        vbox.append(hero_frame)
+
+        hero_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=20)
+        hero_box.set_margin_top(18)
+        hero_box.set_margin_bottom(18)
+        hero_box.set_margin_start(22)
+        hero_box.set_margin_end(22)
+        hero_frame.set_child(hero_box)
+
+        left_hero = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        left_hero.set_hexpand(True)
+        hero_box.append(left_hero)
+
+        self.hero_icon = Gtk.Image.new_from_icon_name("weather-few-clouds-symbolic")
+        self.hero_icon.set_pixel_size(68)
+        left_hero.append(self.hero_icon)
+
+        title_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        left_hero.append(title_col)
+
+        cur_loc = self.weather_locations[self.weather_active_idx]
+        self.hero_city_lbl = Gtk.Label(label=cur_loc["name"], xalign=0)
+        self.hero_city_lbl.add_css_class("title-3")
+        title_col.append(self.hero_city_lbl)
+
+        self.hero_temp_lbl = Gtk.Label(label="--°", xalign=0)
+        self.hero_temp_lbl.add_css_class("title-1")
+        title_col.append(self.hero_temp_lbl)
+
+        self.hero_cond_lbl = Gtk.Label(label="Loading forecast…", xalign=0)
+        self.hero_cond_lbl.add_css_class("dim-label")
+        title_col.append(self.hero_cond_lbl)
+
+        right_hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        right_hero.set_valign(Gtk.Align.CENTER)
+        hero_box.append(right_hero)
+
+        self.hero_details_lbl = Gtk.Label(label="", xalign=1)
+        self.hero_details_lbl.set_justify(Gtk.Justification.RIGHT)
+        right_hero.append(self.hero_details_lbl)
+
+        self.hero_sun_lbl = Gtk.Label(label="", xalign=1)
+        self.hero_sun_lbl.add_css_class("caption")
+        self.hero_sun_lbl.add_css_class("dim-label")
+        right_hero.append(self.hero_sun_lbl)
+
+        # Hourly Curve Chart Group (24-Hour Curve + Time Labels)
+        hourly_group = Adw.PreferencesGroup(
+            title="Hourly Forecast (Next 24 Hours)",
+            description="Temperature curve, precipitation chance, and hourly trend",
+        )
+        vbox.append(hourly_group)
+
+        chart_frame = Gtk.Frame()
+        hourly_group.add(chart_frame)
+
+        self.hourly_chart = Gtk.DrawingArea()
+        self.hourly_chart.set_content_height(220)
+        self.hourly_chart.set_hexpand(True)
+        self.hourly_chart.set_draw_func(self._draw_hourly_chart)
+        chart_frame.set_child(self.hourly_chart)
+
+        # 7-Day Daily Forecast Group
+        self.daily_group = Adw.PreferencesGroup(
+            title="7-Day Forecast",
+            description="Daily conditions, rain chance, low and high temperatures",
+        )
+        vbox.append(self.daily_group)
+
+    def _show_toast(self, msg):
+        toast = Adw.Toast.new(GLib.markup_escape_text(msg))
+        toast.set_timeout(3)
+        self.toast_overlay.add_toast(toast)
+
+    def _on_toggle_add_panel(self, btn):
+        self.add_drawer.set_visible(btn.get_active())
+
+    def _sync_and_reload(self, msg=None):
+        save_weather_config(self.weather_locations, self.weather_active_idx, self.weather_units)
+        self._updating = True
+        try:
+            self.loc_dropdown.set_model(Gtk.StringList.new([l["name"] for l in self.weather_locations]))
+            self.loc_dropdown.set_selected(self.weather_active_idx)
+        finally:
+            self._updating = False
+
+        relaunch_active_engine_from_config()
+        if self.on_change_cb:
+            self.on_change_cb()
+        self._refresh_forecast()
+        if msg:
+            self._show_toast(msg)
+
+    def _on_loc_dropdown_changed(self, dropdown, _pspec):
+        if self._updating:
+            return
+        idx = int(dropdown.get_selected())
+        if 0 <= idx < len(self.weather_locations):
+            self.weather_active_idx = idx
+            self._sync_and_reload(f"Switched weather to '{self.weather_locations[idx]['name']}'")
+
+    def _on_unit_changed(self, dropdown, _pspec):
+        if self._updating:
+            return
+        self.weather_units = "imperial" if int(dropdown.get_selected()) == 1 else "metric"
+        self._sync_and_reload()
+
+    def _on_search_clicked(self, _btn):
+        q = self.search_entry.get_text().strip()
+        if not q:
+            return
+        self.search_btn.set_sensitive(False)
+        self.search_btn.set_label("Searching…")
+
+        def _worker():
+            res = search_weather_locations(q)
+
+            def _done():
+                self.search_btn.set_sensitive(True)
+                self.search_btn.set_label("Search")
+                self._search_results = res
+                self._populate_search_results(q)
+                return False
+
+            GLib.idle_add(_done)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _populate_search_results(self, q):
+        for r in self._search_rows:
+            self.search_results_group.remove(r)
+        self._search_rows = []
+        self.search_results_group.set_visible(True)
+
+        if not self._search_results:
+            row = Adw.ActionRow(
+                title=GLib.markup_escape_text(f"No match found for '{q}'"),
+                subtitle="Try the village name without 'village', search a nearby town, or open Manual Entry above.",
+            )
+            btn = Gtk.Button(label="Enter Manually")
+            btn.set_valign(Gtk.Align.CENTER)
+            btn.add_css_class("suggested-action")
+            btn.connect("clicked", lambda _b: (self.manual_name.set_text(q), self.manual_expander.set_expanded(True)))
+            row.add_suffix(btn)
+            self.search_results_group.add(row)
+            self._search_rows.append(row)
+            return
+
+        for item in self._search_results:
+            sub = f"{item['source']} • Lat: {item['lat']:.4f}, Lon: {item['lon']:.4f}"
+            if item.get("detail"):
+                sub += f" • {item['detail']}"
+            row = Adw.ActionRow(
+                title=GLib.markup_escape_text(item["name"]),
+                subtitle=GLib.markup_escape_text(sub[:135]),
+            )
+            ren = Gtk.Button(label="Rename & Add")
+            ren.set_valign(Gtk.Align.CENTER)
+            ren.connect("clicked", self._on_rename_search_item, item)
+            row.add_suffix(ren)
+
+            use_b = Gtk.Button(label="Select")
+            use_b.set_valign(Gtk.Align.CENTER)
+            use_b.add_css_class("suggested-action")
+            use_b.connect("clicked", self._on_pick_search_item, item)
+            row.add_suffix(use_b)
+
+            self.search_results_group.add(row)
+            self._search_rows.append(row)
+
+    def _on_rename_search_item(self, _b, item):
+        typed = self.search_entry.get_text().strip()
+        self.manual_name.set_text(typed if typed else item["name"])
+        self.manual_lat.set_text(f"{item['lat']:.5f}")
+        self.manual_lon.set_text(f"{item['lon']:.5f}")
+        self.manual_expander.set_expanded(True)
+
+    def _add_and_activate(self, name, lat, lon):
+        existing = next((i for i, l in enumerate(self.weather_locations) if l["name"].lower() == name.lower()), None)
+        if existing is not None:
+            self.weather_locations[existing] = {"name": name, "lat": lat, "lon": lon}
+            self.weather_active_idx = existing
+        else:
+            self.weather_locations.insert(0, {"name": name, "lat": lat, "lon": lon})
+            self.weather_active_idx = 0
+        self.search_results_group.set_visible(False)
+        self.add_loc_toggle.set_active(False)
+        self._sync_and_reload(f"Added & loaded weather for '{name}'")
+
+    def _on_pick_search_item(self, _b, item):
+        GLib.idle_add(lambda: (self._add_and_activate(item["name"], item["lat"], item["lon"]), False)[1])
+
+    def _on_save_manual(self, _b):
+        name = self.manual_name.get_text().strip()
+        try:
+            lat = float(self.manual_lat.get_text().strip())
+            lon = float(self.manual_lon.get_text().strip())
+        except ValueError:
+            self._show_toast("Please enter valid Latitude and Longitude")
+            return
+        if not name or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            self._show_toast("Enter a valid Name and coordinates (-90..90, -180..180)")
+            return
+        self.manual_name.set_text("")
+        self.manual_lat.set_text("")
+        self.manual_lon.set_text("")
+        self.manual_expander.set_expanded(False)
+        self._add_and_activate(name, lat, lon)
+
+    def _refresh_forecast(self):
+        loc = self.weather_locations[self.weather_active_idx]
+        self.hero_city_lbl.set_label(loc["name"])
+        self.hero_cond_lbl.set_label(f"Fetching forecast for ({loc['lat']:.4f}, {loc['lon']:.4f})…")
+
+        def _worker():
+            try:
+                data = fetch_full_weather_forecast(loc["lat"], loc["lon"], self.weather_units)
+                GLib.idle_add(lambda: (self._apply_forecast_data(loc, data), False)[1])
+            except Exception as exc:
+                err = str(exc)
+                GLib.idle_add(lambda: (self.hero_cond_lbl.set_label(f"Could not fetch weather: {err}"), False)[1])
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_forecast_data(self, loc, data):
+        self._forecast_data = data
+        cur = data.get("current", {})
+        daily = data.get("daily", {})
+
+        t_unit = "°F" if self.weather_units == "imperial" else "°C"
+        s_unit = "mph" if self.weather_units == "imperial" else "km/h"
+        cond_text, icon_name = wmo_info(cur.get("weather_code"))
+
+        self.hero_icon.set_from_icon_name(icon_name)
+        self.hero_city_lbl.set_label(loc["name"])
+        self.hero_temp_lbl.set_label(f"{round(cur.get('temperature_2m', 0))}{t_unit}")
+
+        hi_list = daily.get("temperature_2m_max", [])
+        lo_list = daily.get("temperature_2m_min", [])
+        hi_s = f"{round(hi_list[0])}°" if hi_list else "--"
+        lo_s = f"{round(lo_list[0])}°" if lo_list else "--"
+
+        self.hero_cond_lbl.set_label(
+            f"{cond_text}  •  High {hi_s} / Low {lo_s}  •  Feels like {round(cur.get('apparent_temperature', 0))}{t_unit}"
+        )
+
+        hum = cur.get("relative_humidity_2m", 0)
+        rain = cur.get("precipitation_probability", 0)
+        wspd = cur.get("wind_speed_10m", 0)
+        wdir = wind_compass(cur.get("wind_direction_10m", 0))
+        pres = cur.get("surface_pressure", 0)
+        self.hero_details_lbl.set_label(
+            f"Humidity: {round(hum)}%   •   Rain Chance: {round(rain)}%\n"
+            f"Wind: {round(wspd)} {s_unit} ({wdir})   •   Pressure: {round(pres)} hPa"
+        )
+
+        sunrises = daily.get("sunrise", [])
+        sunsets = daily.get("sunset", [])
+        sr = sunrises[0].split("T")[-1] if sunrises else "--:--"
+        ss = sunsets[0].split("T")[-1] if sunsets else "--:--"
+        tz = data.get("timezone_abbreviation", "")
+        self.hero_sun_lbl.set_label(f"Sunrise {sr}   •   Sunset {ss}   •   {loc['lat']:.4f}, {loc['lon']:.4f} ({tz})")
+
+        self.hourly_chart.queue_draw()
+
+        # Populate 7-Day rows
+        for r in self._daily_rows:
+            self.daily_group.remove(r)
+        self._daily_rows = []
+
+        import datetime
+
+        dates = daily.get("time", [])
+        codes = daily.get("weather_code", [])
+        tmaxs = daily.get("temperature_2m_max", [])
+        tmins = daily.get("temperature_2m_min", [])
+        rpops = daily.get("precipitation_probability_max", [])
+
+        for i in range(min(7, len(dates))):
+            try:
+                dt = datetime.date.fromisoformat(dates[i])
+                day_lbl = "Today" if i == 0 else dt.strftime("%A, %b %d")
+            except Exception:
+                day_lbl = dates[i]
+
+            c_txt, c_ico = wmo_info(codes[i] if i < len(codes) else None)
+            hi = round(tmaxs[i]) if i < len(tmaxs) else 0
+            lo = round(tmins[i]) if i < len(tmins) else 0
+            pop = round(rpops[i]) if i < len(rpops) and rpops[i] is not None else 0
+
+            row = Adw.ActionRow(
+                title=GLib.markup_escape_text(day_lbl),
+                subtitle=GLib.markup_escape_text(f"{c_txt}  •  Rain chance {pop}%"),
+            )
+            ico = Gtk.Image.new_from_icon_name(c_ico)
+            ico.set_pixel_size(24)
+            row.add_prefix(ico)
+
+            range_lbl = Gtk.Label(label=f"Low {lo}{t_unit}   →   High {hi}{t_unit}")
+            range_lbl.set_valign(Gtk.Align.CENTER)
+            row.add_suffix(range_lbl)
+
+            self.daily_group.add(row)
+            self._daily_rows.append(row)
+
+    def _draw_hourly_chart(self, _area, cr, width, height):
+        # Background
+        cr.set_source_rgba(0.11, 0.12, 0.16, 1.0)
+        cr.rectangle(0, 0, width, height)
+        cr.fill()
+
+        if not self._forecast_data:
+            cr.set_source_rgba(0.75, 0.78, 0.85, 0.9)
+            cr.select_font_face("Sans", 0, 0)
+            cr.set_font_size(13)
+            cr.move_to(24, height / 2)
+            cr.show_text("Loading 24-hour temperature curve…")
+            return
+
+        hourly = self._forecast_data.get("hourly", {})
+        times = hourly.get("time", [])
+        temps = hourly.get("temperature_2m", [])
+        pops = hourly.get("precipitation_probability", [])
+        cur_time = self._forecast_data.get("current", {}).get("time", "")
+
+        start_idx = 0
+        if cur_time and cur_time[:13]:
+            prefix = cur_time[:13]
+            for idx, t in enumerate(times):
+                if t.startswith(prefix):
+                    start_idx = idx
+                    break
+
+        count = min(13, max(0, len(times) - start_idx))
+        if count < 2:
+            return
+
+        slice_t = times[start_idx : start_idx + count]
+        slice_v = [float(x) for x in temps[start_idx : start_idx + count]]
+        slice_p = [int(pops[start_idx + k] or 0) if start_idx + k < len(pops) else 0 for k in range(count)]
+
+        vmin = min(slice_v)
+        vmax = max(slice_v)
+        span = max(2.0, vmax - vmin)
+
+        pad_x = 34
+        top_y = 54
+        bot_y = height - 42
+        plot_w = max(100, width - pad_x * 2)
+        plot_h = max(40, bot_y - top_y)
+
+        pts = []
+        for i in range(count):
+            px = pad_x + (i / (count - 1)) * plot_w
+            py = bot_y - ((slice_v[i] - vmin) / span) * plot_h
+            pts.append((px, py))
+
+        # Vertical grid separators & labels
+        cr.select_font_face("Sans", 0, 0)
+        for i, (px, py) in enumerate(pts):
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.08)
+            cr.set_line_width(1.0)
+            cr.move_to(px, 18)
+            cr.line_to(px, height - 12)
+            cr.stroke()
+
+            # Time header
+            hr_label = "Now" if i == 0 else slice_t[i].split("T")[-1][:5]
+            cr.set_source_rgba(0.85, 0.88, 0.94, 0.90)
+            cr.set_font_size(10.5)
+            cr.move_to(px - 14, 22)
+            cr.show_text(hr_label)
+
+            # Rain % under time
+            if slice_p[i] > 0:
+                cr.set_source_rgba(0.35, 0.78, 1.0, 0.95)
+                cr.set_font_size(9.5)
+                cr.move_to(px - 10, 36)
+                cr.show_text(f"{slice_p[i]}%")
+
+        # Shaded gradient area under curve
+        cr.move_to(pts[0][0], bot_y + 12)
+        cr.line_to(pts[0][0], pts[0][1])
+        for i in range(len(pts) - 1):
+            x0, y0 = pts[i]
+            x1, y1 = pts[i + 1]
+            cx = (x0 + x1) * 0.5
+            cr.curve_to(cx, y0, cx, y1, x1, y1)
+        cr.line_to(pts[-1][0], bot_y + 12)
+        cr.close_path()
+        cr.set_source_rgba(0.95, 0.68, 0.12, 0.22)
+        cr.fill()
+
+        # Curve stroke (warm golden-amber like GNOME Weather)
+        cr.move_to(pts[0][0], pts[0][1])
+        for i in range(len(pts) - 1):
+            x0, y0 = pts[i]
+            x1, y1 = pts[i + 1]
+            cx = (x0 + x1) * 0.5
+            cr.curve_to(cx, y0, cx, y1, x1, y1)
+        cr.set_source_rgba(0.98, 0.75, 0.18, 1.0)
+        cr.set_line_width(2.4)
+        cr.stroke()
+
+        # Points + Temperature values at bottom
+        for i, (px, py) in enumerate(pts):
+            cr.set_source_rgba(0.98, 0.80, 0.25, 1.0)
+            cr.arc(px, py, 3.2, 0, 6.28318)
+            cr.fill()
+
+            cr.set_source_rgba(0.98, 0.82, 0.35, 0.95)
+            cr.set_font_size(11.5)
+            cr.move_to(px - 11, height - 14)
+            cr.show_text(f"{round(slice_v[i])}°")
 
 
 class RainmeterControlApp(Adw.Application):
@@ -4129,6 +5433,25 @@ class RainmeterControlApp(Adw.Application):
         win.present()
 
 
+class WeatherPopupApp(Adw.Application):
+    def __init__(self):
+        super().__init__(
+            application_id="io.github.trad_rainmeter.WeatherForecast",
+            flags=Gio.ApplicationFlags.FLAGS_NONE,
+        )
+
+    def do_activate(self):
+        style_mgr = Adw.StyleManager.get_default()
+        style_mgr.set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+        win = self.props.active_window
+        if not win:
+            win = WeatherForecastWindow(self)
+        win.present()
+
+
 if __name__ == "__main__":
+    if "--weather-popup" in sys.argv:
+        argv = [a for a in sys.argv if a != "--weather-popup"]
+        sys.exit(WeatherPopupApp().run(argv))
     app = RainmeterControlApp()
     sys.exit(app.run(sys.argv))
