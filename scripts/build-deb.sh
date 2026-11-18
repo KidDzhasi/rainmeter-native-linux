@@ -82,7 +82,9 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 exit 0
 EOF
+chmod 644 "${PKG_ROOT}/DEBIAN/control"
 chmod 755 "${PKG_ROOT}/DEBIAN/postinst"
+find "$PKG_ROOT" -type d -exec chmod 0755 {} +
 
 mkdir -p "${ROOT_DIR}/dist"
 dpkg-deb --build --root-owner-group "$PKG_ROOT" "${ROOT_DIR}/dist/${PKG_NAME}.deb"

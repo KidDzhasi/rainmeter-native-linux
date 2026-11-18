@@ -651,18 +651,24 @@ bool LayerShellWindow::initX11Surface(int width, int height, int windowX,
     return false;
   }
 
-  // Borderless Motif hint
+  // Borderless & non-movable Motif hint (MWM_HINTS_FUNCTIONS | MWM_HINTS_DECORATIONS = 3UL,
+  // functions = 0UL disables WM move/resize/minimize/maximize/close)
   struct MotifWmHints {
     unsigned long flags;
     unsigned long functions;
     unsigned long decorations;
     long input_mode;
     unsigned long status;
-  } motifHints = {2UL, 0UL, 0UL, 0L, 0UL};
+  } motifHints = {3UL, 0UL, 0UL, 0L, 0UL};
   Atom motifAtom = XInternAtom(xDisplay_, "_MOTIF_WM_HINTS", False);
   XChangeProperty(xDisplay_, xWindow_, motifAtom, motifAtom, 32,
                   PropModeReplace,
                   reinterpret_cast<unsigned char *>(&motifHints), 5);
+
+  // Set EWMH allowed actions to empty so the Window Manager does not allow moving or resizing
+  Atom wmAllowedActions = XInternAtom(xDisplay_, "_NET_WM_ALLOWED_ACTIONS", False);
+  XChangeProperty(xDisplay_, xWindow_, wmAllowedActions, XA_ATOM, 32,
+                  PropModeReplace, nullptr, 0);
 
   // Set EWMH desktop window type so XWayland / Mutter places it in
   // META_LAYER_DESKTOP (beneath all normal windows, on the desktop background).
@@ -700,11 +706,15 @@ bool LayerShellWindow::initX11Surface(int width, int height, int windowX,
   XSetWMHints(xDisplay_, xWindow_, &wmHints);
 
   XSizeHints sizeHints{};
-  sizeHints.flags = USPosition | PPosition | USSize | PSize;
+  sizeHints.flags = USPosition | PPosition | USSize | PSize | PMinSize | PMaxSize;
   sizeHints.x = windowX;
   sizeHints.y = windowY;
   sizeHints.width = width;
   sizeHints.height = height;
+  sizeHints.min_width = width;
+  sizeHints.min_height = height;
+  sizeHints.max_width = width;
+  sizeHints.max_height = height;
   XSetWMNormalHints(xDisplay_, xWindow_, &sizeHints);
 
   if (!scope.empty()) {
@@ -866,11 +876,15 @@ void LayerShellWindow::moveAndResize(int x, int y, int width, int height) {
 
     if (useX11_ && xDisplay_ && xWindow_) {
         XSizeHints sizeHints{};
-        sizeHints.flags = USPosition | PPosition | USSize | PSize;
+        sizeHints.flags = USPosition | PPosition | USSize | PSize | PMinSize | PMaxSize;
         sizeHints.x = xWindowX_;
         sizeHints.y = xWindowY_;
         sizeHints.width = width;
         sizeHints.height = height;
+        sizeHints.min_width = width;
+        sizeHints.min_height = height;
+        sizeHints.max_width = width;
+        sizeHints.max_height = height;
         XSetWMNormalHints(xDisplay_, xWindow_, &sizeHints);
         XMoveResizeWindow(xDisplay_, xWindow_, xWindowX_, xWindowY_,
                           static_cast<unsigned int>(width),
@@ -1072,48 +1086,14 @@ bool LayerShellWindow::dispatchPending() {
         handlePointerEnter(ev.xcrossing.x, ev.xcrossing.y);
         break;
       case MotionNotify:
-        // Compress motion events so dragging is smooth
         while (XCheckTypedWindowEvent(xDisplay_, xWindow_, MotionNotify, &ev)) {}
         handlePointerMotion(ev.xmotion.x, ev.xmotion.y);
-        if (xButtonDown_) {
-          int dx = ev.xmotion.x_root - xDragStartRootX_;
-          int dy = ev.xmotion.y_root - xDragStartRootY_;
-          if (!xDragging_ && (std::abs(dx) > 5 || std::abs(dy) > 5)) {
-            xDragging_ = true;
-          }
-          if (xDragging_) {
-            xWindowX_ = xDragStartWinX_ + dx;
-            xWindowY_ = xDragStartWinY_ + dy;
-            XMoveWindow(xDisplay_, xWindow_, xWindowX_, xWindowY_);
-            XLowerWindow(xDisplay_, xWindow_);
-            XFlush(xDisplay_);
-          }
-        }
         break;
       case ButtonPress:
         handlePointerMotion(ev.xbutton.x, ev.xbutton.y);
-        if (ev.xbutton.button == Button1) {
-          xButtonDown_ = true;
-          xDragging_ = false;
-          xDragStartRootX_ = ev.xbutton.x_root;
-          xDragStartRootY_ = ev.xbutton.y_root;
-          xDragStartWinX_ = xWindowX_;
-          xDragStartWinY_ = xWindowY_;
-        }
         break;
       case ButtonRelease: {
         handlePointerMotion(ev.xbutton.x, ev.xbutton.y);
-        if (ev.xbutton.button == Button1) {
-          bool wasDragging = xDragging_;
-          xButtonDown_ = false;
-          xDragging_ = false;
-          if (wasDragging) {
-            if (positionCb_) {
-              positionCb_(xWindowX_, xWindowY_);
-            }
-            break;
-          }
-        }
         uint32_t wlBtn = BTN_LEFT;
         if (ev.xbutton.button == Button2) wlBtn = BTN_MIDDLE;
         else if (ev.xbutton.button == Button3) wlBtn = BTN_RIGHT;
@@ -1121,6 +1101,15 @@ bool LayerShellWindow::dispatchPending() {
         handlePointerButton(wlBtn, 0U);
         break;
       }
+      case ConfigureNotify:
+        // Keep the widget strictly pinned to its configured desktop position
+        if (ev.xconfigure.window == xWindow_ &&
+            (ev.xconfigure.x != xWindowX_ || ev.xconfigure.y != xWindowY_)) {
+          XMoveWindow(xDisplay_, xWindow_, xWindowX_, xWindowY_);
+          XLowerWindow(xDisplay_, xWindow_);
+          XFlush(xDisplay_);
+        }
+        break;
       case KeyPress:
       case KeyRelease: {
         if (ev.xkey.keycode >= 8) {

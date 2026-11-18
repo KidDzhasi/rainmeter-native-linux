@@ -1,0 +1,77 @@
+{
+  "name": "Trad Cyber",
+  "widgets": [
+    {
+      "key": "widgets/AudioHorizon/AudioHorizon.ini",
+      "title": "AudioHorizon",
+      "monitor": 0,
+      "anchor_x": "right",
+      "anchor_y": "bottom",
+      "use_custom_pos": true,
+      "x": 1031,
+      "y": 614,
+      "auto_fit": true,
+      "scale": 1.0
+    },
+    {
+      "key": "widgets/BasicClock/BasicClock.ini",
+      "title": "BasicClock",
+      "monitor": 0,
+      "anchor_x": "center",
+      "anchor_y": "top",
+      "use_custom_pos": true,
+      "x": 589,
+      "y": 115,
+      "auto_fit": true,
+      "scale": 1.0
+    },
+    {
+      "key": "widgets/BasicCpu/BasicCpu.ini",
+      "title": "BasicCpu",
+      "monitor": 0,
+      "anchor_x": "left",
+      "anchor_y": "bottom",
+      "use_custom_pos": true,
+      "x": 1201,
+      "y": 42,
+      "auto_fit": false,
+      "scale": 1.0
+    },
+    {
+      "key": "widgets/BasicStorage/BasicStorage.ini",
+      "title": "BasicStorage",
+      "monitor": 0,
+      "anchor_x": "right",
+      "anchor_y": "bottom",
+      "use_custom_pos": true,
+      "x": 1037,
+      "y": 42,
+      "auto_fit": false,
+      "scale": 1.0
+    },
+    {
+      "key": "widgets/BasicWeather/BasicWeather.ini",
+      "title": "BasicWeather",
+      "monitor": 0,
+      "anchor_x": "center",
+      "anchor_y": "bottom",
+      "use_custom_pos": true,
+      "x": 1092,
+      "y": 324,
+      "auto_fit": true,
+      "scale": 1.0
+    },
+    {
+      "key": "widgets/MusicCompact/MusicCompact.ini",
+      "title": "MusicCompact",
+      "monitor": 0,
+      "anchor_x": "center",
+      "anchor_y": "top",
+      "use_custom_pos": true,
+      "x": 1030,
+      "y": 215,
+      "auto_fit": false,
+      "scale": 1.0
+    }
+  ]
+}

@@ -163,6 +163,10 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
       return std::filesystem::absolute(userRel, ecCheck).lexically_normal().string();
     }
   }
+  std::filesystem::path appShare = std::filesystem::path("/app/share/trad-rainmeter") / rel;
+  if (std::filesystem::is_regular_file(appShare, ecCheck)) {
+    return appShare.string();
+  }
   std::filesystem::path sysShare = std::filesystem::path("/usr/share/trad-rainmeter") / rel;
   if (std::filesystem::is_regular_file(sysShare, ecCheck)) {
     return sysShare.string();

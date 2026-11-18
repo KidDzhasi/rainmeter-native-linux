@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.kiddzhasi.TradRainmeter</id>
+  <name>Trad Rainmeter</name>
+  <summary>Native Linux Rainmeter desktop widgets, suites, weather, music players, and audio visualizers</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="com.github.kiddzhasi">
+    <name>K-Trad (KidDzhasi)</name>
+  </developer>
+  <description>
+    <p>
+      Trad Rainmeter brings hardware-accelerated Rainmeter desktop widgets and suites natively to Linux (Wayland and X11/XWayland, including GNOME, KDE Plasma, Pop!_OS COSMIC, Hyprland, and Cinnamon).
+    </p>
+    <ul>
+      <li>Full-screen Suites (TradSunset, DashboardSuite, GreenRibbonSuite) with automatic monitor resolution fitting</li>
+      <li>8 Modular Basic Telemetry Widgets with 10 Color Themes, 6 Card Shapes, and 4 Gauge Designs</li>
+      <li>3 MPRIS2 Media Players (Spotify, Browser, VLC, Rhythmbox) and 2 Real-Time 20-Band PipeWire/PulseAudio Spectrum Visualizers</li>
+      <li>Clickable Live Weather Forecast with 24-hour temperature curve, 7-day forecast, and global city + rural village search</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">com.github.kiddzhasi.TradRainmeter.desktop</launchable>
+  <url type="homepage">https://github.com/KidDzhasi/Trad-rainmeter</url>
+  <url type="bugtracker">https://github.com/KidDzhasi/Trad-rainmeter/issues</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.1.0" date="2026-11-18">
+      <description>
+        <p>Added pinned desktop widgets, live expandable weather forecast with rural village geocoding, 6 widget shapes, 4 gauge designs, MPRIS2 music players, 20-band audio visualizers, APT .deb installer, and Flatpak support.</p>
+      </description>
+    </release>
+  </releases>
+</component>

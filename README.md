@@ -56,3 +56,14 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
 python3 ./launcher_gui.py
 ```
+
+### Flatpak (All Linux Distros)
+
+Build and install the single-file `.flatpak` bundle (`com.github.kiddzhasi.TradRainmeter`):
+
+```bash
+chmod +x scripts/build-flatpak.sh
+./scripts/build-flatpak.sh
+flatpak install --user dist/trad-rainmeter.flatpak
+flatpak run com.github.kiddzhasi.TradRainmeter
+```

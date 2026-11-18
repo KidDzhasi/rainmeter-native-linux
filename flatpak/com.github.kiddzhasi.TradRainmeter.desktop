@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Trad Rainmeter
+GenericName=Desktop Widgets & Customization Engine
+Comment=Native Linux Rainmeter desktop widgets, suites, live weather, music players, and audio visualizers
+Exec=trad-rainmeter-gui
+Icon=preferences-desktop-wallpaper
+Terminal=false
+Type=Application
+Categories=Utility;DesktopSettings;GTK;
+Keywords=rainmeter;widgets;desktop;conky; customization;weather;visualizer;
+StartupNotify=true

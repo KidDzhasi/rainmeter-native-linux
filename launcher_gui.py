@@ -4397,6 +4397,11 @@ class ControlCenterWindow(Adw.ApplicationWindow):
             if is_target:
                 self.skin_state[s["key"]]["monitor"] = self.suite_monitor_idx
                 self.skin_state[s["key"]]["auto_fit"] = True
+                self.skin_state[s["key"]]["use_custom_pos"] = False
+                self.skin_state[s["key"]]["anchor_x"] = "center"
+                self.skin_state[s["key"]]["anchor_y"] = "center"
+                self.skin_state[s["key"]]["x"] = 0
+                self.skin_state[s["key"]]["y"] = 0
 
         self._sync_active_states_in_place()
         self._select_widget(suite_key)
