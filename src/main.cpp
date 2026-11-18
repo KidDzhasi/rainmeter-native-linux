@@ -1,8 +1,11 @@
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "engine/SkinManager.hpp"
@@ -126,6 +129,28 @@ int main(int argc, char **argv) {
   }
 
   // -----------------------------------------------------------------------
+  // Cross-namespace single-instance token (~/.config/rainmeter-native/engine.token)
+  // Ensures Flatpak and host instances never overlap on the desktop.
+  // -----------------------------------------------------------------------
+  const std::string tokenPath =
+      Utils::ResolvePath("~/.config/rainmeter-native/engine.token");
+  std::error_code ecDir;
+  std::filesystem::create_directories(
+      std::filesystem::path(tokenPath).parent_path(), ecDir);
+  const auto bootNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  const std::string instanceToken =
+      std::to_string(bootNs) + "-" + std::to_string(::getpid());
+  {
+    std::ofstream tf(tokenPath, std::ios::trunc);
+    if (tf.is_open()) {
+      tf << instanceToken;
+    }
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  // -----------------------------------------------------------------------
   // Load all skins via SkinManager.
   // -----------------------------------------------------------------------
   SkinManager manager;
@@ -165,11 +190,22 @@ int main(int argc, char **argv) {
   });
 
   auto lastLoopTime = std::chrono::steady_clock::now();
+  auto lastTokenCheck = lastLoopTime;
 
   while (manager.ActiveCount() > 0) {
     auto now = std::chrono::steady_clock::now();
     double dtMs = std::chrono::duration<double, std::milli>(now - lastLoopTime).count();
     lastLoopTime = now;
+
+    if (now - lastTokenCheck >= std::chrono::milliseconds(150)) {
+      lastTokenCheck = now;
+      std::ifstream tf(tokenPath);
+      std::string currentToken;
+      if (!tf.is_open() || !(tf >> currentToken) ||
+          currentToken != instanceToken) {
+        break;
+      }
+    }
 
     manager.UpdateAnimations(dtMs);
 

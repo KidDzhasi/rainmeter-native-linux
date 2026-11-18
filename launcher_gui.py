@@ -2756,7 +2756,13 @@ def get_engine_pids():
 
 
 def stop_engine():
-    """Immediately stop all running rainmeter-native instances."""
+    """Immediately stop all running rainmeter-native instances (including across Flatpak/host boundaries)."""
+    token_file = os.path.join(CONFIG_DIR, "engine.token")
+    try:
+        if os.path.exists(token_file):
+            os.remove(token_file)
+    except OSError:
+        pass
     for pid in get_engine_pids():
         try:
             os.kill(pid, signal.SIGTERM)
@@ -3165,6 +3171,13 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         super().__init__(application=app)
         self.set_title("Trad Rainmeter")
         self.set_default_size(1080, 780)
+        try:
+            disp = Gdk.Display.get_default()
+            if disp is not None:
+                Gtk.IconTheme.get_for_display(disp).add_search_path(os.path.join(REPO_DIR, "assets"))
+            self.set_icon_name("trad-engine")
+        except Exception:
+            pass
 
         self.monitors = detect_monitors()
         self.skins = discover_all_skins()

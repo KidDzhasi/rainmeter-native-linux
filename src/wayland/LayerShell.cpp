@@ -651,24 +651,18 @@ bool LayerShellWindow::initX11Surface(int width, int height, int windowX,
     return false;
   }
 
-  // Borderless & non-movable Motif hint (MWM_HINTS_FUNCTIONS | MWM_HINTS_DECORATIONS = 3UL,
-  // functions = 0UL disables WM move/resize/minimize/maximize/close)
+  // Borderless Motif hint
   struct MotifWmHints {
     unsigned long flags;
     unsigned long functions;
     unsigned long decorations;
     long input_mode;
     unsigned long status;
-  } motifHints = {3UL, 0UL, 0UL, 0L, 0UL};
+  } motifHints = {2UL, 0UL, 0UL, 0L, 0UL};
   Atom motifAtom = XInternAtom(xDisplay_, "_MOTIF_WM_HINTS", False);
   XChangeProperty(xDisplay_, xWindow_, motifAtom, motifAtom, 32,
                   PropModeReplace,
                   reinterpret_cast<unsigned char *>(&motifHints), 5);
-
-  // Set EWMH allowed actions to empty so the Window Manager does not allow moving or resizing
-  Atom wmAllowedActions = XInternAtom(xDisplay_, "_NET_WM_ALLOWED_ACTIONS", False);
-  XChangeProperty(xDisplay_, xWindow_, wmAllowedActions, XA_ATOM, 32,
-                  PropModeReplace, nullptr, 0);
 
   // Set EWMH desktop window type so XWayland / Mutter places it in
   // META_LAYER_DESKTOP (beneath all normal windows, on the desktop background).
@@ -706,15 +700,11 @@ bool LayerShellWindow::initX11Surface(int width, int height, int windowX,
   XSetWMHints(xDisplay_, xWindow_, &wmHints);
 
   XSizeHints sizeHints{};
-  sizeHints.flags = USPosition | PPosition | USSize | PSize | PMinSize | PMaxSize;
+  sizeHints.flags = USPosition | PPosition | USSize | PSize;
   sizeHints.x = windowX;
   sizeHints.y = windowY;
   sizeHints.width = width;
   sizeHints.height = height;
-  sizeHints.min_width = width;
-  sizeHints.min_height = height;
-  sizeHints.max_width = width;
-  sizeHints.max_height = height;
   XSetWMNormalHints(xDisplay_, xWindow_, &sizeHints);
 
   if (!scope.empty()) {
@@ -876,15 +866,11 @@ void LayerShellWindow::moveAndResize(int x, int y, int width, int height) {
 
     if (useX11_ && xDisplay_ && xWindow_) {
         XSizeHints sizeHints{};
-        sizeHints.flags = USPosition | PPosition | USSize | PSize | PMinSize | PMaxSize;
+        sizeHints.flags = USPosition | PPosition | USSize | PSize;
         sizeHints.x = xWindowX_;
         sizeHints.y = xWindowY_;
         sizeHints.width = width;
         sizeHints.height = height;
-        sizeHints.min_width = width;
-        sizeHints.min_height = height;
-        sizeHints.max_width = width;
-        sizeHints.max_height = height;
         XSetWMNormalHints(xDisplay_, xWindow_, &sizeHints);
         XMoveResizeWindow(xDisplay_, xWindow_, xWindowX_, xWindowY_,
                           static_cast<unsigned int>(width),

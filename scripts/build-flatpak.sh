@@ -65,7 +65,8 @@ mkdir -p "${APP_FILES}/bin" \
          "${APP_FILES}/share/trad-rainmeter" \
          "${APP_FILES}/share/applications" \
          "${APP_FILES}/share/metainfo" \
-         "${APP_FILES}/share/icons/hicolor/scalable/apps"
+         "${APP_FILES}/share/icons/hicolor/scalable/apps" \
+         "${APP_FILES}/share/icons/hicolor/512x512/apps"
 
 install -m755 build/rainmeter-native "${APP_FILES}/bin/rainmeter-native"
 install -m755 build/rmskin-unpacker "${APP_FILES}/bin/rmskin-unpacker"
@@ -85,6 +86,8 @@ install -m644 flatpak/com.github.kiddzhasi.TradRainmeter.metainfo.xml \
   "${APP_FILES}/share/metainfo/${APP_ID}.metainfo.xml"
 install -m644 assets/trad-engine.svg \
   "${APP_FILES}/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
+install -m644 assets/trad-engine.png \
+  "${APP_FILES}/share/icons/hicolor/512x512/apps/${APP_ID}.png"
 
 # Bundle any shared libraries required by rainmeter-native not present in org.gnome.Platform
 RUNTIME_LIB_SYS="/var/lib/flatpak/runtime/org.gnome.Platform/x86_64/${RUNTIME_VER}/active/files/lib/x86_64-linux-gnu"
@@ -102,7 +105,6 @@ flatpak build-finish "$STAGE_DIR" \
   --share=ipc \
   --share=network \
   --socket=wayland \
-  --socket=fallback-x11 \
   --socket=x11 \
   --socket=pulseaudio \
   --device=dri \

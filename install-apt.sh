@@ -41,6 +41,7 @@ EOF
 sudo chmod +x /usr/bin/trad-rainmeter
 
 sudo install -Dm644 assets/trad-engine.svg /usr/share/icons/hicolor/scalable/apps/trad-engine.svg
+sudo install -Dm644 assets/trad-engine.png /usr/share/icons/hicolor/512x512/apps/trad-engine.png
 
 sudo tee /usr/share/applications/trad-rainmeter.desktop >/dev/null <<'EOF'
 [Desktop Entry]

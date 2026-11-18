@@ -18,6 +18,7 @@ mkdir -p "${PKG_ROOT}/DEBIAN" \
          "${PKG_ROOT}/usr/share/trad-rainmeter" \
          "${PKG_ROOT}/usr/share/applications" \
          "${PKG_ROOT}/usr/share/icons/hicolor/scalable/apps" \
+         "${PKG_ROOT}/usr/share/icons/hicolor/512x512/apps" \
          "${PKG_ROOT}/usr/share/gnome-shell/extensions"
 
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
@@ -36,6 +37,7 @@ EOF
 chmod 755 "${PKG_ROOT}/usr/bin/trad-rainmeter"
 
 install -m644 assets/trad-engine.svg "${PKG_ROOT}/usr/share/icons/hicolor/scalable/apps/trad-engine.svg"
+install -m644 assets/trad-engine.png "${PKG_ROOT}/usr/share/icons/hicolor/512x512/apps/trad-engine.png"
 
 cat > "${PKG_ROOT}/usr/share/applications/trad-rainmeter.desktop" <<'EOF'
 [Desktop Entry]
