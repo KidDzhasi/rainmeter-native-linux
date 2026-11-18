@@ -84,8 +84,6 @@ install -m644 flatpak/com.github.kiddzhasi.TradRainmeter.desktop \
   "${APP_FILES}/share/applications/${APP_ID}.desktop"
 install -m644 flatpak/com.github.kiddzhasi.TradRainmeter.metainfo.xml \
   "${APP_FILES}/share/metainfo/${APP_ID}.metainfo.xml"
-install -m644 assets/trad-engine.svg \
-  "${APP_FILES}/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
 install -m644 assets/trad-engine.png \
   "${APP_FILES}/share/icons/hicolor/512x512/apps/${APP_ID}.png"
 
