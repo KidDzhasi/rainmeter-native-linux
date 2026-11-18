@@ -544,6 +544,17 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath, int
     std::cerr << "SkinInstance: could not open '" << iniPath << "'\n";
     return nullptr;
   }
+
+  // Apply user-writable Theme.inc and Weather.inc overrides (essential for read-only /usr/share APT installs)
+  std::string userThemeInc = Utils::ResolvePath("~/.config/rainmeter-native/Theme.inc");
+  if (fs::exists(userThemeInc) && (iniPath.find("widgets/") != std::string::npos || iniPath.find("/widgets/") != std::string::npos)) {
+    inst->skin_.parseFile(userThemeInc, false);
+  }
+  std::string userWeatherInc = Utils::ResolvePath("~/.config/rainmeter-native/Weather.inc");
+  if (fs::exists(userWeatherInc)) {
+    inst->skin_.parseFile(userWeatherInc, false);
+  }
+
   inst->measures_.loadFrom(inst->skin_);
 
   const std::string resources = inst->skin_.resourcesPath();

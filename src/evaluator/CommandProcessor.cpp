@@ -230,6 +230,13 @@ BangResult CommandProcessor::execute(const std::string &bangString,
               guiPath = candidate;
           }
       }
+      if (!std::filesystem::exists(guiPath, ec)) {
+          if (std::filesystem::exists("/usr/share/trad-rainmeter/launcher_gui.py", ec)) {
+              guiPath = "/usr/share/trad-rainmeter/launcher_gui.py";
+          } else if (std::filesystem::exists("/opt/trad-rainmeter/launcher_gui.py", ec)) {
+              guiPath = "/opt/trad-rainmeter/launcher_gui.py";
+          }
+      }
       std::string sysCmd = "python3 \"" + guiPath.string() + "\" --weather-popup >/dev/null 2>&1 &";
       int ret = std::system(sysCmd.c_str());
       (void)ret;

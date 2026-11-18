@@ -4,37 +4,62 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.1.0)'
+        required: false
+        default: '1.1.0'
 
 jobs:
   build-and-release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
 
     steps:
-    - name: 📥 Checkout repository
-      uses: actions/checkout@v4
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
 
-    - name: 🛠️ Install Build Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgles2-mesa-dev libepoxy-dev libfontconfig1-dev libzip-dev
+      - name: 🛠️ Install APT Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config git dpkg-dev \
+            wayland-protocols libwayland-dev libxkbcommon-dev \
+            libx11-dev libxrandr-dev \
+            libegl-dev libgles-dev libepoxy-dev \
+            libfontconfig-dev libzip-dev libcurl4-openssl-dev \
+            liblua5.4-dev libglib2.0-dev libdbus-1-dev libpulse-dev
 
-    - name: ⚙️ Compile C++ Engine
-      run: |
-        cmake -B build -S .
-        cmake --build build --config Release
+      - name: ⚙️ Compile C++ Engine
+        run: |
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j"$(nproc)"
 
-    - name: 📦 Package Application
-      run: |
-        mkdir -p dist/rainmeter-native
-        cp build/rainmeter-native dist/rainmeter-native/ || true
-        cp trad_launcher.py launch_trad.sh dist/rainmeter-native/
-        cp -r assets suites dist/rainmeter-native/ 2>/dev/null || true
-        tar -czvf rainmeter-native-linux-x86_64.tar.gz -C dist rainmeter-native
+      - name: 📦 Build .deb APT Package & Portable Tarball
+        run: |
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG_VER="${{ github.event.inputs.version }}"
+          fi
+          chmod +x scripts/build-deb.sh install-apt.sh
+          ./scripts/build-deb.sh "${TAG_VER}"
 
-    - name: 🚀 Publish GitHub Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: rainmeter-native-linux-x86_64.tar.gz
-        generate_release_notes: true
+          mkdir -p dist/trad-rainmeter
+          cp build/rainmeter-native build/rmskin-unpacker dist/trad-rainmeter/
+          cp launcher_gui.py install-apt.sh README.md LICENSE dist/trad-rainmeter/
+          cp -r assets suites widgets community gnome-extension dist/trad-rainmeter/
+          tar -czvf dist/trad-rainmeter-linux-x86_64.tar.gz -C dist trad-rainmeter
+
+          python3 -c 'import zipfile, os; src="gnome-extension/trad-rainmeter@kiddzhasi.github.com"; z=zipfile.ZipFile("dist/trad-rainmeter@kiddzhasi.github.com.shell-extension.zip","w",zipfile.ZIP_DEFLATED); [z.write(os.path.join(src,f), f) for f in sorted(os.listdir(src))]; z.close()'
+
+      - name: 🚀 Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/trad-rainmeter_*.deb
+            dist/trad-rainmeter-linux-x86_64.tar.gz
+            dist/trad-rainmeter@kiddzhasi.github.com.shell-extension.zip
+          generate_release_notes: true

@@ -42,16 +42,39 @@ except Exception:
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 BUILD_DIR = os.path.join(REPO_DIR, "build")
-ENGINE_BIN = os.path.join(BUILD_DIR, "rainmeter-native")
-SUITES_DIR = os.path.join(REPO_DIR, "suites")
-WIDGETS_DIR = os.path.join(REPO_DIR, "widgets")
-THEME_INC_PATH = os.path.join(WIDGETS_DIR, "Theme.inc")
-WEATHER_INC_PATH = os.path.join(WIDGETS_DIR, "Weather.inc")
-COMMUNITY_DIR = os.path.join(REPO_DIR, "community")
 CONFIG_DIR = os.path.expanduser("~/.config/rainmeter-native")
 USER_SKINS_DIR = os.path.join(CONFIG_DIR, "Skins")
 GLOBAL_CONFIG = os.path.join(CONFIG_DIR, "Rainmeter.ini")
 WEATHER_LOCATIONS_PATH = os.path.join(CONFIG_DIR, "weather_locations.json")
+
+_local_bin = os.path.join(BUILD_DIR, "rainmeter-native")
+if os.path.isfile(_local_bin):
+    ENGINE_BIN = _local_bin
+else:
+    ENGINE_BIN = shutil.which("rainmeter-native") or "/usr/bin/rainmeter-native"
+
+SYSTEM_SUITES_DIR = os.path.join(REPO_DIR, "suites")
+SYSTEM_WIDGETS_DIR = os.path.join(REPO_DIR, "widgets")
+COMMUNITY_DIR = os.path.join(REPO_DIR, "community")
+
+if os.access(SYSTEM_WIDGETS_DIR, os.W_OK):
+    WIDGETS_DIR = SYSTEM_WIDGETS_DIR
+else:
+    WIDGETS_DIR = os.path.join(CONFIG_DIR, "widgets")
+    if os.path.isdir(SYSTEM_WIDGETS_DIR) and not os.path.isdir(WIDGETS_DIR):
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        shutil.copytree(SYSTEM_WIDGETS_DIR, WIDGETS_DIR, dirs_exist_ok=True)
+
+if os.access(SYSTEM_SUITES_DIR, os.W_OK):
+    SUITES_DIR = SYSTEM_SUITES_DIR
+else:
+    SUITES_DIR = os.path.join(CONFIG_DIR, "suites")
+    os.makedirs(SUITES_DIR, exist_ok=True)
+
+THEME_INC_PATH = os.path.join(WIDGETS_DIR, "Theme.inc")
+WEATHER_INC_PATH = os.path.join(WIDGETS_DIR, "Weather.inc")
+USER_THEME_INC = os.path.join(CONFIG_DIR, "Theme.inc")
+USER_WEATHER_INC = os.path.join(CONFIG_DIR, "Weather.inc")
 
 # ---------------------------------------------------------------------------
 # Basic Widgets Theme Presets (inspired by the desktop theme gallery)
@@ -324,7 +347,11 @@ def write_basic_theme(theme_dict, shape_dict=None, design_dict=None):
         f"SubTextColor={theme_dict['subtext']}\n"
         f"TrackColor={theme_dict['track']}\n"
     )
+    os.makedirs(WIDGETS_DIR, exist_ok=True)
     with open(THEME_INC_PATH, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(USER_THEME_INC, "w", encoding="utf-8") as f:
         f.write(content)
 
 
@@ -430,6 +457,8 @@ def save_weather_config(locations, active_idx, units):
         f"WeatherUnits={units}\n"
     )
     with open(WEATHER_INC_PATH, "w", encoding="utf-8") as f:
+        f.write(inc_content)
+    with open(USER_WEATHER_INC, "w", encoding="utf-8") as f:
         f.write(inc_content)
 
 
@@ -2875,10 +2904,13 @@ def discover_all_skins():
     items = []
     seen_abs = set()
 
-    # 1. Built-in Suites under REPO_DIR/suites
-    if os.path.isdir(SUITES_DIR):
-        for folder in sorted(os.listdir(SUITES_DIR)):
-            folder_path = os.path.join(SUITES_DIR, folder)
+    # 1. Built-in Suites under REPO_DIR/suites (and SYSTEM_SUITES_DIR)
+    for suites_base in dict.fromkeys([SYSTEM_SUITES_DIR, SUITES_DIR]):
+        if not os.path.isdir(suites_base):
+            continue
+        base_rel_root = REPO_DIR if suites_base.startswith(REPO_DIR) else CONFIG_DIR
+        for folder in sorted(os.listdir(suites_base)):
+            folder_path = os.path.join(suites_base, folder)
             if not os.path.isdir(folder_path):
                 continue
             if os.path.isfile(os.path.join(folder_path, "suite.json")):
@@ -2890,7 +2922,7 @@ def discover_all_skins():
                         if abs_p in seen_abs:
                             continue
                         seen_abs.add(abs_p)
-                        rel_key = os.path.relpath(abs_p, REPO_DIR)
+                        rel_key = os.path.relpath(abs_p, base_rel_root)
                         meta = estimate_skin_size(abs_p)
                         items.append(
                             {
@@ -2910,8 +2942,9 @@ def discover_all_skins():
                             }
                         )
 
-    # 2. Anchored Basic Widgets under REPO_DIR/widgets
+    # 2. Anchored Basic Widgets under WIDGETS_DIR
     if os.path.isdir(WIDGETS_DIR):
+        w_base_rel_root = REPO_DIR if WIDGETS_DIR.startswith(REPO_DIR) else CONFIG_DIR
         for folder in sorted(os.listdir(WIDGETS_DIR)):
             folder_path = os.path.join(WIDGETS_DIR, folder)
             if not os.path.isdir(folder_path):
@@ -2923,7 +2956,7 @@ def discover_all_skins():
                         if abs_p in seen_abs:
                             continue
                         seen_abs.add(abs_p)
-                        rel_key = os.path.relpath(abs_p, REPO_DIR)
+                        rel_key = os.path.relpath(abs_p, w_base_rel_root)
                         meta = estimate_skin_size(abs_p)
                         items.append(
                             {
@@ -5723,6 +5756,23 @@ class WeatherPopupApp(Adw.Application):
 
 
 if __name__ == "__main__":
+    if "--reload" in sys.argv:
+        stop_engine()
+        if os.path.isfile(GLOBAL_CONFIG) and os.path.isfile(ENGINE_BIN):
+            cp = configparser.ConfigParser(interpolation=None, strict=False)
+            cp.optionxform = str
+            cp.read(GLOBAL_CONFIG, encoding="utf-8")
+            keys = [s for s in cp.sections() if cp.get(s, "Active", fallback="0").strip() not in ("0", "false", "")]
+            if keys:
+                subprocess.Popen(
+                    [ENGINE_BIN] + keys,
+                    cwd=REPO_DIR,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+        sys.exit(0)
     if "--weather-popup" in sys.argv:
         argv = [a for a in sys.argv if a != "--weather-popup"]
         sys.exit(WeatherPopupApp().run(argv))

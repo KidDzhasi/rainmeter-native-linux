@@ -45,7 +45,7 @@ class TradRainmeterIndicator extends PanelMenu.Button {
         // Reload Active Widgets
         const reloadItem = new PopupMenu.PopupMenuItem('Reload Active Desktop Widgets');
         reloadItem.connect('activate', () => {
-            this._spawnCommand([this._getRepoFile('build/rainmeter-native')]);
+            this._spawnCommand(['python3', this._getRepoFile('launcher_gui.py'), '--reload']);
         });
         this.menu.addMenuItem(reloadItem);
 
@@ -69,15 +69,17 @@ class TradRainmeterIndicator extends PanelMenu.Button {
     _getRepoDir() {
         const home = GLib.get_home_dir();
         const candidates = [
+            '/usr/share/trad-rainmeter',
+            '/opt/trad-rainmeter',
             GLib.build_filenamev([home, 'Documents', 'GitHub', 'Trad-rainmeter']),
             GLib.build_filenamev([home, 'Documents', 'GitHub', 'rainmeter-native-linux']),
             GLib.build_filenamev([home, '.local', 'share', 'trad-rainmeter']),
         ];
         for (const dir of candidates) {
-            if (GLib.file_test(dir, GLib.FileTest.IS_DIR))
+            if (GLib.file_test(GLib.build_filenamev([dir, 'launcher_gui.py']), GLib.FileTest.EXISTS))
                 return dir;
         }
-        return candidates[1];
+        return candidates[2];
     }
 
     _getRepoFile(relPath) {

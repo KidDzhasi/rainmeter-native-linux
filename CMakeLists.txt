@@ -27,7 +27,7 @@ pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
 pkg_check_modules(LIBZIP REQUIRED libzip)
 pkg_check_modules(LIBCURL REQUIRED libcurl)
 pkg_check_modules(GIO REQUIRED gio-2.0)
-pkg_search_module(LUA REQUIRED lua lua5.3 lua5.4)
+pkg_search_module(LUA REQUIRED lua lua5.4 lua5.3 lua-5.4 lua-5.3)
 pkg_check_modules(GLIB2 REQUIRED glib-2.0)
 pkg_check_modules(DBUS1 REQUIRED dbus-1)
 pkg_check_modules(PULSE REQUIRED libpulse-simple libpulse)
@@ -284,3 +284,6 @@ add_executable(rmskin-unpacker
     src/parser/IniLexer.cpp
     src/parser/EnvironmentManager.cpp)
 target_compile_options(rmskin-unpacker PRIVATE -Wall -Wextra)
+
+install(TARGETS rainmeter-native rmskin-unpacker
+    RUNTIME DESTINATION bin)

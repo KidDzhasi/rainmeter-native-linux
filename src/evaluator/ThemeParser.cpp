@@ -147,7 +147,7 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
   }
 
   // Check if `rel` is already a valid absolute or relative path (e.g. repo
-  // `suites/...` when launched from the repo root or `build/`).
+  // `suites/...` when launched from the repo root, `build/`, `~/.config/rainmeter-native/`, or `/usr/share/trad-rainmeter/`).
   std::error_code ecCheck;
   if (std::filesystem::is_regular_file(rel, ecCheck)) {
     return std::filesystem::absolute(rel, ecCheck).lexically_normal().string();
@@ -155,6 +155,21 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
   std::filesystem::path parentRel = std::filesystem::path("..") / rel;
   if (std::filesystem::is_regular_file(parentRel, ecCheck)) {
     return std::filesystem::absolute(parentRel, ecCheck).lexically_normal().string();
+  }
+  const char *homeEnv = std::getenv("HOME");
+  if (homeEnv) {
+    std::filesystem::path userRel = std::filesystem::path(homeEnv) / ".config" / "rainmeter-native" / rel;
+    if (std::filesystem::is_regular_file(userRel, ecCheck)) {
+      return std::filesystem::absolute(userRel, ecCheck).lexically_normal().string();
+    }
+  }
+  std::filesystem::path sysShare = std::filesystem::path("/usr/share/trad-rainmeter") / rel;
+  if (std::filesystem::is_regular_file(sysShare, ecCheck)) {
+    return sysShare.string();
+  }
+  std::filesystem::path optShare = std::filesystem::path("/opt/trad-rainmeter") / rel;
+  if (std::filesystem::is_regular_file(optShare, ecCheck)) {
+    return optShare.string();
   }
 
   // Trim any leading/trailing slashes.

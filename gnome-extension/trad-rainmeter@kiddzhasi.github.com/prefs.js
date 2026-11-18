@@ -33,6 +33,8 @@ export default class TradRainmeterPreferences extends ExtensionPreferences {
         launchBtn.connect('clicked', () => {
             const home = GLib.get_home_dir();
             const candidates = [
+                '/usr/share/trad-rainmeter/launcher_gui.py',
+                '/opt/trad-rainmeter/launcher_gui.py',
                 GLib.build_filenamev([home, 'Documents', 'GitHub', 'Trad-rainmeter', 'launcher_gui.py']),
                 GLib.build_filenamev([home, 'Documents', 'GitHub', 'rainmeter-native-linux', 'launcher_gui.py']),
             ];
