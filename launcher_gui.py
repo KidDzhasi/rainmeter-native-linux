@@ -657,37 +657,227 @@ def wind_compass(deg):
 
 
 _FORECAST_CACHE = {}
+_WEATHER_CACHE_DIR = os.path.expanduser("~/.cache/trad-rainmeter")
 _RELAUNCH_LOCK = threading.Lock()
 
 
+def _met_symbol_to_wmo(sym):
+    s = (sym or "").lower()
+    if "thunder" in s:
+        return 95
+    if "heavyrain" in s:
+        return 65
+    if "rainshowers" in s:
+        return 80
+    if "lightrain" in s:
+        return 61
+    if "rain" in s or "sleet" in s:
+        return 63
+    if "snow" in s:
+        return 73
+    if "fog" in s:
+        return 45
+    if "partlycloudy" in s:
+        return 2
+    if "fair" in s:
+        return 1
+    if "cloudy" in s:
+        return 3
+    if "clearsky" in s:
+        return 0
+    return 2
+
+
+def _fetch_metno_as_openmeteo(lat, lon, units="metric"):
+    """Fetch forecast from Norwegian Meteorological Institute (met.no) and normalize to Open-Meteo schema."""
+    import datetime
+
+    url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat:.4f}&lon={lon:.4f}"
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "TradRainmeter/1.0 (github.com/KidDzhasi/Trad-rainmeter)"}
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        raw = json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+    ts_list = raw.get("properties", {}).get("timeseries", [])
+    if not ts_list:
+        raise ValueError("Empty response from met.no")
+
+    def c_to_u(c):
+        return (c * 9.0 / 5.0 + 32.0) if units == "imperial" else c
+
+    def ms_to_u(ms):
+        return (ms * 2.23694) if units == "imperial" else (ms * 3.6)
+
+    def sym_rain_prob(sym):
+        s = (sym or "").lower()
+        if "thunder" in s or "heavy" in s:
+            return 80
+        if "rain" in s or "shower" in s:
+            return 60
+        if "cloudy" in s:
+            return 20
+        return 5
+
+    h_times, h_temps, h_pops, h_codes = [], [], [], []
+    by_day = {}
+
+    first_inst = ts_list[0].get("data", {}).get("instant", {}).get("details", {})
+    first_next = (
+        ts_list[0].get("data", {}).get("next_1_hours")
+        or ts_list[0].get("data", {}).get("next_6_hours")
+        or {}
+    )
+    first_sym = first_next.get("summary", {}).get("symbol_code", "partlycloudy_day")
+
+    for entry in ts_list:
+        iso = entry.get("time", "")
+        try:
+            dt_utc = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+            dt_loc = dt_utc.astimezone()
+        except Exception:
+            continue
+
+        inst = entry.get("data", {}).get("instant", {}).get("details", {})
+        nxt = (
+            entry.get("data", {}).get("next_1_hours")
+            or entry.get("data", {}).get("next_6_hours")
+            or entry.get("data", {}).get("next_12_hours")
+            or {}
+        )
+        sym = nxt.get("summary", {}).get("symbol_code", "cloudy")
+        temp_v = c_to_u(float(inst.get("air_temperature", 0.0)))
+        pop_v = sym_rain_prob(sym)
+        wmo_v = _met_symbol_to_wmo(sym)
+
+        h_times.append(dt_loc.strftime("%Y-%m-%dT%H:%M"))
+        h_temps.append(round(temp_v, 1))
+        h_pops.append(pop_v)
+        h_codes.append(wmo_v)
+
+        day_key = dt_loc.strftime("%Y-%m-%d")
+        bucket = by_day.setdefault(day_key, {"temps": [], "pops": [], "codes": []})
+        bucket["temps"].append(temp_v)
+        bucket["pops"].append(pop_v)
+        bucket["codes"].append(wmo_v)
+
+    d_times, d_codes, d_max, d_min, d_pop, d_sr, d_ss = [], [], [], [], [], [], []
+    for dk in sorted(by_day.keys())[:7]:
+        b = by_day[dk]
+        d_times.append(dk)
+        d_codes.append(max(b["codes"]))
+        d_max.append(round(max(b["temps"]), 1))
+        d_min.append(round(min(b["temps"]), 1))
+        d_pop.append(max(b["pops"]))
+        d_sr.append(f"{dk}T05:30")
+        d_ss.append(f"{dk}T18:30")
+
+    now_temp = c_to_u(float(first_inst.get("air_temperature", 0.0)))
+    return {
+        "timezone_abbreviation": "met.no",
+        "current": {
+            "time": h_times[0] if h_times else "",
+            "temperature_2m": round(now_temp, 1),
+            "apparent_temperature": round(now_temp, 1),
+            "relative_humidity_2m": float(first_inst.get("relative_humidity", 0.0)),
+            "precipitation_probability": sym_rain_prob(first_sym),
+            "weather_code": _met_symbol_to_wmo(first_sym),
+            "wind_speed_10m": round(ms_to_u(float(first_inst.get("wind_speed", 0.0))), 1),
+            "wind_direction_10m": float(first_inst.get("wind_from_direction", 0.0)),
+            "surface_pressure": float(first_inst.get("air_pressure_at_sea_level", 1013.0)),
+        },
+        "hourly": {
+            "time": h_times,
+            "temperature_2m": h_temps,
+            "precipitation_probability": h_pops,
+            "weather_code": h_codes,
+        },
+        "daily": {
+            "time": d_times,
+            "weather_code": d_codes,
+            "temperature_2m_max": d_max,
+            "temperature_2m_min": d_min,
+            "precipitation_probability_max": d_pop,
+            "sunrise": d_sr,
+            "sunset": d_ss,
+        },
+    }
+
+
 def fetch_full_weather_forecast(lat, lon, units="metric", force=False):
-    """Fetch current conditions, 24-hour hourly forecast, and 7-day daily forecast from Open-Meteo (with 5-min cache)."""
+    """Fetch forecast with 15-min memory & disk cache, Open-Meteo primary, and met.no fallback."""
     cache_key = (round(float(lat), 3), round(float(lon), 3), units)
-    now = time.monotonic()
+    now_mono = time.monotonic()
+    now_wall = time.time()
+
     if not force and cache_key in _FORECAST_CACHE:
         ts, cached_data = _FORECAST_CACHE[cache_key]
-        if now - ts < 300.0:
+        if now_mono - ts < 900.0:
             return cached_data
 
-    params = {
-        "latitude": f"{lat:.4f}",
-        "longitude": f"{lon:.4f}",
-        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m,surface_pressure,is_day",
-        "hourly": "temperature_2m,precipitation_probability,weather_code",
-        "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset",
-        "timezone": "auto",
-        "forecast_days": 7,
-    }
-    if units == "imperial":
-        params["temperature_unit"] = "fahrenheit"
-        params["wind_speed_unit"] = "mph"
+    os.makedirs(_WEATHER_CACHE_DIR, exist_ok=True)
+    cache_file = os.path.join(
+        _WEATHER_CACHE_DIR, f"forecast_{cache_key[0]:.3f}_{cache_key[1]:.3f}_{units}.json"
+    )
+    stale_data = None
+    if os.path.isfile(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as cf:
+                payload = json.load(cf)
+            stale_data = payload.get("data")
+            if not force and stale_data and (now_wall - float(payload.get("ts", 0))) < 900.0:
+                _FORECAST_CACHE[cache_key] = (now_mono, stale_data)
+                return stale_data
+        except Exception:
+            pass
 
-    url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
-    with urllib.request.urlopen(req, timeout=8) as resp:
-        data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-    _FORECAST_CACHE[cache_key] = (now, data)
-    return data
+    data = None
+    last_err = None
+
+    # 1. Try Open-Meteo
+    try:
+        params = {
+            "latitude": f"{lat:.4f}",
+            "longitude": f"{lon:.4f}",
+            "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m,surface_pressure,is_day",
+            "hourly": "temperature_2m,precipitation_probability,weather_code",
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset",
+            "timezone": "auto",
+            "forecast_days": 7,
+        }
+        if units == "imperial":
+            params["temperature_unit"] = "fahrenheit"
+            params["wind_speed_unit"] = "mph"
+
+        url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception as exc:
+        last_err = exc
+
+    # 2. Fallback to Norwegian Meteorological Institute (met.no) if Open-Meteo failed or rate-limited (429)
+    if data is None:
+        try:
+            data = _fetch_metno_as_openmeteo(lat, lon, units)
+        except Exception as exc:
+            last_err = exc
+
+    if data is not None:
+        _FORECAST_CACHE[cache_key] = (now_mono, data)
+        try:
+            with open(cache_file, "w", encoding="utf-8") as cf:
+                json.dump({"ts": now_wall, "data": data}, cf)
+        except Exception:
+            pass
+        return data
+
+    # 3. Serve stale disk cache if both providers failed temporarily
+    if stale_data is not None:
+        _FORECAST_CACHE[cache_key] = (now_mono, stale_data)
+        return stale_data
+
+    raise last_err if last_err else RuntimeError("Weather unavailable")
 
 
 def relaunch_active_engine_from_config():
