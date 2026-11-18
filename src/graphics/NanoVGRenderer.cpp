@@ -8,6 +8,8 @@
 
 #include <iostream>
 #include <cmath>
+#include <fontconfig/fontconfig.h>
+#include <fontconfig/fcfreetype.h>
 
 // NanoVG GL3 implementation
 #define NANOVG_GL3_IMPLEMENTATION
@@ -58,6 +60,26 @@ bool NanoVGRenderer::beginEGL(int width, int height) {
     if (font == -1) {
         font = nvgCreateFont(vg_, "sans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
     }
+    if (font == -1) {
+        FcConfig *config = FcInitLoadConfigAndFonts();
+        if (config) {
+            FcPattern *pat = FcNameParse(reinterpret_cast<const FcChar8 *>("sans-serif"));
+            if (pat) {
+                FcConfigSubstitute(config, pat, FcMatchPattern);
+                FcDefaultSubstitute(pat);
+                FcResult res;
+                FcPattern *match = FcFontMatch(config, pat, &res);
+                if (match) {
+                    FcChar8 *file = nullptr;
+                    if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file) {
+                        font = nvgCreateFont(vg_, "sans", reinterpret_cast<const char *>(file));
+                    }
+                    FcPatternDestroy(match);
+                }
+                FcPatternDestroy(pat);
+            }
+        }
+    }
     if (font != -1) {
         s_fontFamilyMap["sans"] = "sans";
     }
@@ -71,7 +93,9 @@ void NanoVGRenderer::beginFrame(int width, int height, float pixelRatio) {
     if (vg_) {
         width_ = width;
         height_ = height;
-        glViewport(0, 0, width, height);
+        int fbWidth = std::max(1, static_cast<int>(std::lround(width * pixelRatio)));
+        int fbHeight = std::max(1, static_cast<int>(std::lround(height * pixelRatio)));
+        glViewport(0, 0, fbWidth, fbHeight);
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
         glEnable(GL_BLEND);
@@ -216,20 +240,34 @@ void NanoVGRenderer::drawRoundline(double x, double y, double w, double h, doubl
     nvgBeginPath(vg_);
 
     if (solid) {
-        int dir = rotationAngle >= 0 ? NVG_CW : NVG_CCW;
-        nvgArc(vg_, cx, cy, radius, startAngle, startAngle + rotationAngle, dir);
-        
-        if (lineStart > 0.0) {
-            int oppDir = rotationAngle >= 0 ? NVG_CCW : NVG_CW;
-            nvgLineTo(vg_, cx + std::cos(startAngle + rotationAngle) * lineStart, cy + std::sin(startAngle + rotationAngle) * lineStart);
-            nvgArc(vg_, cx, cy, lineStart, startAngle + rotationAngle, startAngle, oppDir);
-        } else {
-            nvgLineTo(vg_, cx, cy);
+        if (std::abs(rotationAngle) < 0.0005) {
+            nvgRestore(vg_);
+            return;
         }
-        
-        nvgClosePath(vg_);
-        nvgFillColor(vg_, toNVGColor(color));
-        nvgFill(vg_);
+        int dir = rotationAngle >= 0 ? NVG_CW : NVG_CCW;
+        if (lineStart > 0.0 && radius > lineStart) {
+            double thickness = std::max(1.0, radius - lineStart);
+            double midRadius = (radius + lineStart) * 0.5;
+            if (std::abs(rotationAngle) >= 2.0 * M_PI - 0.005) {
+                nvgCircle(vg_, cx, cy, midRadius);
+            } else {
+                nvgArc(vg_, cx, cy, midRadius, startAngle, startAngle + rotationAngle, dir);
+            }
+            nvgStrokeColor(vg_, toNVGColor(color));
+            nvgStrokeWidth(vg_, static_cast<float>(thickness));
+            nvgLineCap(vg_, NVG_BUTT);
+            nvgStroke(vg_);
+        } else {
+            if (std::abs(rotationAngle) >= 2.0 * M_PI - 0.005) {
+                nvgCircle(vg_, cx, cy, radius);
+            } else {
+                nvgMoveTo(vg_, cx, cy);
+                nvgArc(vg_, cx, cy, radius, startAngle, startAngle + rotationAngle, dir);
+                nvgClosePath(vg_);
+            }
+            nvgFillColor(vg_, toNVGColor(color));
+            nvgFill(vg_);
+        }
     } else {
         double currentAngle = startAngle + rotationAngle;
         double x1 = cx + std::cos(currentAngle) * lineStart;
@@ -411,6 +449,45 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
     auto it = s_fontFamilyMap.find(searchFace);
     if (it != s_fontFamilyMap.end()) {
         resolvedFace = it->second;
+    } else {
+        // Also try matching without spaces
+        std::string compactFace;
+        for (char c : searchFace) {
+            if (c != ' ' && c != '-' && c != '_') compactFace += c;
+        }
+        auto itCompact = s_fontFamilyMap.find(compactFace);
+        if (itCompact != s_fontFamilyMap.end()) {
+            resolvedFace = itCompact->second;
+            s_fontFamilyMap[searchFace] = resolvedFace;
+        } else if (!searchFace.empty()) {
+            // Query system Fontconfig for the requested family
+            FcConfig *config = FcInitLoadConfigAndFonts();
+            if (config) {
+                FcPattern *pat = FcNameParse(reinterpret_cast<const FcChar8 *>(fontFace.c_str()));
+                if (pat) {
+                    FcConfigSubstitute(config, pat, FcMatchPattern);
+                    FcDefaultSubstitute(pat);
+                    FcResult res;
+                    FcPattern *match = FcFontMatch(config, pat, &res);
+                    if (match) {
+                        FcChar8 *file = nullptr;
+                        if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file) {
+                            int fId = nvgCreateFont(vg_, searchFace.c_str(), reinterpret_cast<const char *>(file));
+                            if (fId >= 0) {
+                                s_fontFamilyMap[searchFace] = searchFace;
+                                resolvedFace = searchFace;
+                            }
+                        }
+                        FcPatternDestroy(match);
+                    }
+                    FcPatternDestroy(pat);
+                }
+            }
+        }
+    }
+    if (nvgFindFont(vg_, resolvedFace.c_str()) == -1 && resolvedFace != "sans") {
+        // Re-create font in current NVG context if map entry came from a previous context
+        resolvedFace = "sans";
     }
 
     // Rainmeter specifies FontSize in typographic points; NanoVG expects
@@ -479,8 +556,7 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
     // STEP 4: Measure the string locally at (0, 0).
     // ---------------------------------------------------------------
     float bounds[4] = {0, 0, 0, 0};
-    nvgSave(vg_);
-        if (clipString == 2 && maxWidth > 0) {
+    if (clipString == 2 && maxWidth > 0) {
         nvgTextBoxBounds(vg_, 0.0f, 0.0f, maxWidth, textToDraw.c_str(), nullptr, bounds);
     } else {
         nvgTextBounds(vg_, 0.0f, 0.0f, textToDraw.c_str(), nullptr, bounds);
@@ -498,25 +574,19 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
 
     // Helper lambda for the shadow pass (since it needs an offset from the layout)
     auto renderShadowPass = [&](float offset_x, float offset_y) {
-        // 1. Save the global state
         nvgSave(vg_);
         nvgTranslate(vg_, static_cast<float>(x) + offset_x, static_cast<float>(y) + offset_y);
         if (angle != 0.0) nvgRotate(vg_, static_cast<float>(angle));
-        
-        nvgSave(vg_);
+
         if (clipString == 2 && maxWidth > 0) {
             if (maxHeight > 0) {
-                // 2. Apply the bounding box mask based on the INI W and H variables
                 nvgScissor(vg_, 0, 0, maxWidth, maxHeight);
             }
-            // 3. Draw the meter (nvgText or nvgImagePattern/nvgFill)
             nvgTextBox(vg_, 0, 0, maxWidth, textToDraw.c_str(), nullptr);
         } else {
-            // 3. Draw the meter (nvgText or nvgImagePattern/nvgFill)
             nvgText(vg_, 0, 0, textToDraw.c_str(), nullptr);
         }
-        
-        // 4. Immediately restore the state
+
         nvgRestore(vg_);
     };
 
@@ -531,7 +601,6 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
     // ---------------------------------------------------------------
     // STEP 4 & 5: Translate first, build local paint, and draw.
     // ---------------------------------------------------------------
-    // 1. Save the global state
     nvgSave(vg_);
     nvgTranslate(vg_, static_cast<float>(x), static_cast<float>(y));
     if (angle != 0.0) nvgRotate(vg_, static_cast<float>(angle));
@@ -579,20 +648,15 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
         nvgFillColor(vg_, toNVGColor(color));
     }
 
-    nvgSave(vg_);
-        if (clipString == 2 && maxWidth > 0) {
+    if (clipString == 2 && maxWidth > 0) {
         if (maxHeight > 0) {
-            // 2. Apply the bounding box mask based on the INI W and H variables
             nvgScissor(vg_, 0, 0, maxWidth, maxHeight);
         }
-        // 3. Draw the meter (nvgText or nvgImagePattern/nvgFill)
         nvgTextBox(vg_, 0, 0, maxWidth, textToDraw.c_str(), nullptr);
     } else {
-        // 3. Draw the meter (nvgText or nvgImagePattern/nvgFill)
         nvgText(vg_, 0, 0, textToDraw.c_str(), nullptr);
     }
     
-    // 4. Immediately restore the state
     nvgRestore(vg_);
 
     return metrics;
@@ -635,13 +699,42 @@ void NanoVGRenderer::registerFontDirectory(const std::string &fontsDir) {
         std::string ext = entry.path().extension().string();
         for (char &c : ext) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
         if (ext == ".ttf" || ext == ".otf") {
+            std::string filePath = entry.path().string();
             std::string stem = entry.path().stem().string();
             std::string fontName = toLowerString(stem);
             
-            if (nvgFindFont(vg_, fontName.c_str()) == -1) {
-                int font = nvgCreateFont(vg_, fontName.c_str(), entry.path().string().c_str());
-                if (font >= 0) {
-                    s_fontFamilyMap[fontName] = fontName;
+            int font = nvgFindFont(vg_, fontName.c_str());
+            if (font == -1) {
+                font = nvgCreateFont(vg_, fontName.c_str(), filePath.c_str());
+            }
+            if (font >= 0) {
+                s_fontFamilyMap[fontName] = fontName;
+
+                // Also register stripped base family name (e.g. "rajdhani-bold" -> "rajdhani")
+                std::size_t dashPos = fontName.find('-');
+                if (dashPos != std::string::npos && dashPos > 0) {
+                    std::string baseName = fontName.substr(0, dashPos);
+                    s_fontFamilyMap[baseName] = fontName;
+                }
+
+                // Also register true Fontconfig family name (e.g. "Share Tech Mono")
+                int count = 0;
+                FcPattern *pat = FcFreeTypeQuery(
+                    reinterpret_cast<const FcChar8 *>(filePath.c_str()), 0, nullptr, &count);
+                if (pat) {
+                    FcChar8 *family = nullptr;
+                    if (FcPatternGetString(pat, FC_FAMILY, 0, &family) == FcResultMatch && family) {
+                        std::string famLower = toLowerString(reinterpret_cast<const char *>(family));
+                        s_fontFamilyMap[famLower] = fontName;
+                        std::string compactFam;
+                        for (char c : famLower) {
+                            if (c != ' ' && c != '-' && c != '_') compactFam += c;
+                        }
+                        if (!compactFam.empty()) {
+                            s_fontFamilyMap[compactFam] = fontName;
+                        }
+                    }
+                    FcPatternDestroy(pat);
                 }
             }
         }

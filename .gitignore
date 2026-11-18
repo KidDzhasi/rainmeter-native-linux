@@ -3,7 +3,7 @@ build/
 *.o
 .vscode/
 rainmeter-native
-
-
+__pycache__/
+*.pyc
 /build
 

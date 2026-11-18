@@ -4,7 +4,7 @@ import subprocess
 import time
 
 # --- Configuration Paths ---
-REPO_DIR = os.path.expanduser("~/Documents/GitHub/rainmeter-native")
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 BUILD_DIR = os.path.join(REPO_DIR, "build")
 GLOBAL_CONFIG = os.path.expanduser("~/.config/rainmeter-native/Rainmeter.ini")
 
@@ -42,7 +42,7 @@ def get_github_skins():
 
 def kill_engine():
     """Find and terminate any running instances of the C++ engine."""
-    subprocess.run(["pkill", "-x", "rainmeter-native"], stderr=subprocess.DEVNULL)
+    subprocess.run(["killall", "-9", "rainmeter-native"], stderr=subprocess.DEVNULL)
 
 def main():
     print("========================================")

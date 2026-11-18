@@ -17,9 +17,9 @@ using Color = Utils::Color;
 void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathParser *math, NanoVGRenderer &renderer, const std::string &section, double x, double y, double w, double h, double& curWidth, double& curHeight) {
     if (!renderer.valid()) return;
 
-    // 1. Multi-Shape Parsing: Extract up to Shape10 into an ordered list
+    // 1. Multi-Shape Parsing: Extract up to Shape64 into an ordered list
     std::vector<std::string> parsedShapes;
-    for (int i = 1; i <= 10; ++i) {
+    for (int i = 1; i <= 64; ++i) {
         std::string key = (i == 1) ? "Shape" : "Shape" + std::to_string(i);
         std::string rawShapeDef = skin.getOr(section, key, "");
         if (rawShapeDef.empty()) {
@@ -195,6 +195,32 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
             localW = args[0] + rx;
             localH = args[1] + ry;
             
+        } else if (shapeType == "Arc" && args.size() >= 5) {
+            double cx = args[0];
+            double cy = args[1];
+            double r = args[2];
+            double startRad = args[3] * (M_PI / 180.0);
+            double sweepRad = args[4] * (M_PI / 180.0);
+            nvgBeginPath(vg);
+            if (std::abs(sweepRad) >= 2.0 * M_PI - 0.005) {
+                nvgCircle(vg, cx, cy, r);
+            } else if (std::abs(sweepRad) > 0.001) {
+                nvgArc(vg, cx, cy, r, startRad, startRad + sweepRad, sweepRad >= 0 ? NVG_CW : NVG_CCW);
+            }
+            localW = cx + r;
+            localH = cy + r;
+            
+        } else if (shapeType == "Line" && args.size() >= 4) {
+            double x1 = args[0];
+            double y1 = args[1];
+            double x2 = args[2];
+            double y2 = args[3];
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, x1, y1);
+            nvgLineTo(vg, x2, y2);
+            localW = std::max({localW, x1, x2});
+            localH = std::max({localH, y1, y2});
+            
         } else if (shapeType == "Polygon" && args.size() >= 2) {
             nvgBeginPath(vg);
             nvgMoveTo(vg, args[0], args[1]);
@@ -300,7 +326,7 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
             }
         }
         
-        if (hasFill) {
+        if (hasFill && shapeType != "Line" && shapeType != "Arc") {
             if (hasLinearGrad) {
                 float angle_rad = gradAngle * (M_PI / 180.0f);
                 float cx = localW / 2.0f;

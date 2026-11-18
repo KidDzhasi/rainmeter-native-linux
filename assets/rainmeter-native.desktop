@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Rainmeter Native
-Comment=Custom Wayland Desktop Dashboard
-Exec=python3 /home/remember/Documents/GitHub/rainmeter-native/launcher_gui.py
-Icon=trad-engine
+Name=Trad Rainmeter
+Comment=Trad Rainmeter Desktop Widgets, Suites, Themes & Visualizers for Linux
+Exec=python3 /home/k-trad/Documents/GitHub/rainmeter-native-linux/launcher_gui.py
+Icon=/home/k-trad/Documents/GitHub/rainmeter-native-linux/assets/trad-engine.svg
 Terminal=false
 Categories=Utility;DesktopSettings;
