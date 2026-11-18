@@ -61,6 +61,8 @@ modules:
       - chmod 755 /app/bin/trad-rainmeter-gui
       - install -Dm644 flatpak/com.github.kiddzhasi.TradRainmeter.desktop /app/share/applications/com.github.kiddzhasi.TradRainmeter.desktop
       - install -Dm644 flatpak/com.github.kiddzhasi.TradRainmeter.metainfo.xml /app/share/metainfo/com.github.kiddzhasi.TradRainmeter.metainfo.xml
+      - install -Dm644 assets/trad-engine.png /app/share/icons/hicolor/512x512/apps/com.github.kiddzhasi.TradRainmeter.png
     sources:
-      - type: dir
-        path: ..
+      - type: archive
+        url: https://github.com/KidDzhasi/rainmeter-native-linux/archive/refs/tags/v1.1.0.tar.gz
+        sha256: 9f76abf52933492875b3ee8dd2389689909ba8fa31c7636c41fddacbff5d4ef2

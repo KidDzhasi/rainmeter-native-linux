@@ -20,8 +20,8 @@
     </ul>
   </description>
   <launchable type="desktop-id">com.github.kiddzhasi.TradRainmeter.desktop</launchable>
-  <url type="homepage">https://github.com/KidDzhasi/Trad-rainmeter</url>
-  <url type="bugtracker">https://github.com/KidDzhasi/Trad-rainmeter/issues</url>
+  <url type="homepage">https://github.com/KidDzhasi/rainmeter-native-linux</url>
+  <url type="bugtracker">https://github.com/KidDzhasi/rainmeter-native-linux/issues</url>
   <content_rating type="oars-1.1" />
   <releases>
     <release version="1.1.0" date="2026-11-18">
