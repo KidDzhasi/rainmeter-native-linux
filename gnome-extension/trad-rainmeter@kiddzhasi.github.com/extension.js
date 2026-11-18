@@ -35,6 +35,13 @@ class TradRainmeterIndicator extends PanelMenu.Button {
         });
         this.menu.addMenuItem(openGuiItem);
 
+        // Open Weather Forecast & Villages
+        const weatherItem = new PopupMenu.PopupMenuItem('Weather Forecast & Locations');
+        weatherItem.connect('activate', () => {
+            this._spawnCommand(['python3', this._getRepoFile('launcher_gui.py'), '--weather-popup']);
+        });
+        this.menu.addMenuItem(weatherItem);
+
         // Reload Active Widgets
         const reloadItem = new PopupMenu.PopupMenuItem('Reload Active Desktop Widgets');
         reloadItem.connect('activate', () => {

@@ -13,6 +13,7 @@ Features three dedicated tabs:
 """
 
 import configparser
+import concurrent.futures
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 import urllib.request
 import zipfile
@@ -30,7 +32,8 @@ import gi
 gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+gi.require_version("Pango", "1.0")
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 try:
     signal.signal(signal.SIGCHLD, signal.SIG_IGN)
@@ -476,74 +479,89 @@ def search_weather_locations(query):
     if q.lower() not in [x.lower() for x in queries]:
         queries.append(q)
 
-    # 1. ArcGIS World Geocoder (accurate worldwide rural village & locality lookup, e.g. Mahatlani, Majosi, Masakona)
-    arcgis_candidates = []
-    for term in queries[:2]:
-        try:
-            url = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?" + urllib.parse.urlencode(
-                {
-                    "SingleLine": term,
-                    "f": "json",
-                    "maxLocations": 6,
-                    "outFields": "Match_addr,Place_addr,Type,Country",
-                }
-            )
-            req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            for c in data.get("candidates", []):
-                score = float(c.get("score", 0))
-                loc = c.get("location", {})
-                attrs = c.get("attributes", {})
-                addr = attrs.get("Match_addr") or c.get("address") or term
-                place_addr = attrs.get("Place_addr") or ""
-                if "y" in loc and "x" in loc and score >= 75:
-                    arcgis_candidates.append((score, addr, loc["y"], loc["x"], place_addr))
-        except Exception:
-            pass
-    arcgis_candidates.sort(key=lambda item: item[0], reverse=True)
+    # 1 & 2. Query ArcGIS World Geocoder & Open-Meteo in parallel (fast ~0.5s response)
+    def _query_arcgis():
+        out = []
+        for term in queries[:2]:
+            try:
+                url = "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?" + urllib.parse.urlencode(
+                    {
+                        "SingleLine": term,
+                        "f": "json",
+                        "maxLocations": 6,
+                        "outFields": "Match_addr,Place_addr,Type,Country",
+                    }
+                )
+                req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                for c in data.get("candidates", []):
+                    score = float(c.get("score", 0))
+                    loc = c.get("location", {})
+                    attrs = c.get("attributes", {})
+                    addr = attrs.get("Match_addr") or c.get("address") or term
+                    place_addr = attrs.get("Place_addr") or ""
+                    if "y" in loc and "x" in loc and score >= 75:
+                        out.append((score, addr, loc["y"], loc["x"], place_addr))
+            except Exception:
+                pass
+            if out and out[0][0] >= 98:
+                break
+        out.sort(key=lambda item: item[0], reverse=True)
+        return out
+
+    def _query_openmeteo():
+        out = []
+        for term in queries[:2]:
+            try:
+                url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
+                    {"name": term, "count": 5, "language": "en", "format": "json"}
+                )
+                req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                for item in data.get("results", []):
+                    parts = [item.get("name", "")]
+                    if item.get("admin2"):
+                        parts.append(item["admin2"])
+                    elif item.get("admin1"):
+                        parts.append(item["admin1"])
+                    if item.get("country"):
+                        parts.append(item["country"])
+                    label = ", ".join(p for p in parts if p)
+                    detail = " · ".join(
+                        p for p in [item.get("admin1", ""), item.get("feature_code", "")] if p
+                    )
+                    out.append((label, item["latitude"], item["longitude"], "Open-Meteo", detail))
+            except Exception:
+                pass
+            if out:
+                break
+        return out
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        f_arc = pool.submit(_query_arcgis)
+        f_om = pool.submit(_query_openmeteo)
+        arcgis_candidates = f_arc.result()
+        om_candidates = f_om.result()
+
     for score, addr, lat_v, lon_v, place_addr in arcgis_candidates:
         detail = f"{place_addr} · match {score:.0f}%" if place_addr else f"match {score:.0f}%"
         _add(addr, lat_v, lon_v, "ArcGIS Gazetteer", detail)
 
-    # 2. Open-Meteo Geocoding API (fast city/town lookup)
-    for term in queries:
-        try:
-            url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
-                {"name": term, "count": 5, "language": "en", "format": "json"}
-            )
-            req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            for item in data.get("results", []):
-                parts = [item.get("name", "")]
-                if item.get("admin2"):
-                    parts.append(item["admin2"])
-                elif item.get("admin1"):
-                    parts.append(item["admin1"])
-                if item.get("country"):
-                    parts.append(item["country"])
-                label = ", ".join(p for p in parts if p)
-                detail = " · ".join(
-                    p
-                    for p in [item.get("admin1", ""), item.get("feature_code", "")]
-                    if p
-                )
-                _add(label, item["latitude"], item["longitude"], "Open-Meteo", detail)
-        except Exception:
-            pass
-        if len(results) >= 6:
-            break
+    for label, lat_v, lon_v, src, detail in om_candidates:
+        _add(label, lat_v, lon_v, src, detail)
 
-    # 3. OpenStreetMap Nominatim
-    if len(results) < 6:
-        for term in queries[:1]:
+    # 3 & 4. Parallel Nominatim / Photon fallback only if primary sources returned fewer than 3 hits
+    if len(results) < 3:
+        def _query_nom():
+            out = []
             try:
                 url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
-                    {"q": term, "format": "json", "limit": 5, "addressdetails": 1}
+                    {"q": queries[0], "format": "json", "limit": 4, "addressdetails": 1}
                 )
                 req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
-                with urllib.request.urlopen(req, timeout=6) as resp:
+                with urllib.request.urlopen(req, timeout=4) as resp:
                     items = json.loads(resp.read().decode("utf-8", errors="ignore"))
                 for item in items:
                     addr = item.get("address", {})
@@ -558,35 +576,41 @@ def search_weather_locations(query):
                     region = addr.get("state") or addr.get("county") or ""
                     country = addr.get("country") or ""
                     label = ", ".join(p for p in [primary, region, country] if p)
-                    _add(label, item["lat"], item["lon"], "OpenStreetMap", item.get("display_name", ""))
+                    out.append((label, item["lat"], item["lon"], "OpenStreetMap", item.get("display_name", "")))
             except Exception:
                 pass
+            return out
 
-    # 4. Komoot Photon (fuzzy fallback)
-    if len(results) < 5:
-        try:
-            url = "https://photon.komoot.io/api/?" + urllib.parse.urlencode({"q": queries[0], "limit": 5})
-            req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            for feat in data.get("features", []):
-                props = feat.get("properties", {})
-                coords = feat.get("geometry", {}).get("coordinates", [])
-                if len(coords) < 2:
-                    continue
-                lon_v, lat_v = coords[0], coords[1]
-                name = props.get("name", "")
-                if not name:
-                    continue
-                region = props.get("state") or props.get("city") or props.get("county") or ""
-                country = props.get("country") or ""
-                label = ", ".join(p for p in [name, region, country] if p)
-                detail = ", ".join(
-                    p for p in [props.get("osm_value", ""), props.get("county", "")] if p
-                )
-                _add(label, lat_v, lon_v, "Photon OSM", detail)
-        except Exception:
-            pass
+        def _query_photon():
+            out = []
+            try:
+                url = "https://photon.komoot.io/api/?" + urllib.parse.urlencode({"q": queries[0], "limit": 4})
+                req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+                for feat in data.get("features", []):
+                    props = feat.get("properties", {})
+                    coords = feat.get("geometry", {}).get("coordinates", [])
+                    if len(coords) < 2:
+                        continue
+                    lon_v, lat_v = coords[0], coords[1]
+                    name = props.get("name", "")
+                    if not name:
+                        continue
+                    region = props.get("state") or props.get("city") or props.get("county") or ""
+                    country = props.get("country") or ""
+                    label = ", ".join(p for p in [name, region, country] if p)
+                    detail = ", ".join(p for p in [props.get("osm_value", ""), props.get("county", "")] if p)
+                    out.append((label, lat_v, lon_v, "Photon OSM", detail))
+            except Exception:
+                pass
+            return out
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f_nom = pool.submit(_query_nom)
+            f_ph = pool.submit(_query_photon)
+            for label, lat_v, lon_v, src, detail in f_nom.result() + f_ph.result():
+                _add(label, lat_v, lon_v, src, detail)
 
     return results[:10]
 
@@ -632,8 +656,19 @@ def wind_compass(deg):
     return dirs[int(((float(deg) + 11.25) % 360.0) // 22.5) % 16]
 
 
-def fetch_full_weather_forecast(lat, lon, units="metric"):
-    """Fetch current conditions, 24-hour hourly forecast, and 7-day daily forecast from Open-Meteo."""
+_FORECAST_CACHE = {}
+_RELAUNCH_LOCK = threading.Lock()
+
+
+def fetch_full_weather_forecast(lat, lon, units="metric", force=False):
+    """Fetch current conditions, 24-hour hourly forecast, and 7-day daily forecast from Open-Meteo (with 5-min cache)."""
+    cache_key = (round(float(lat), 3), round(float(lon), 3), units)
+    now = time.monotonic()
+    if not force and cache_key in _FORECAST_CACHE:
+        ts, cached_data = _FORECAST_CACHE[cache_key]
+        if now - ts < 300.0:
+            return cached_data
+
     params = {
         "latitude": f"{lat:.4f}",
         "longitude": f"{lon:.4f}",
@@ -649,36 +684,42 @@ def fetch_full_weather_forecast(lat, lon, units="metric"):
 
     url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8", errors="ignore"))
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    _FORECAST_CACHE[cache_key] = (now, data)
+    return data
 
 
 def relaunch_active_engine_from_config():
-    """Restart running desktop skins according to ~/.config/rainmeter-native/Rainmeter.ini."""
-    stop_engine()
-    if not os.path.isfile(GLOBAL_CONFIG) or not os.path.isfile(ENGINE_BIN):
-        return
-    active_keys = []
-    cp = configparser.ConfigParser(interpolation=None, strict=False)
-    cp.optionxform = str
-    try:
-        with open(GLOBAL_CONFIG, "r", encoding="utf-8", errors="ignore") as f:
-            cp.read_file(f)
-        for sec in cp.sections():
-            val = cp.get(sec, "Active", fallback="0").strip()
-            if val not in ("0", "false", ""):
-                active_keys.append(sec)
-    except Exception:
-        return
-    if active_keys:
-        subprocess.Popen(
-            [ENGINE_BIN] + active_keys,
-            cwd=REPO_DIR,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
+    """Restart running desktop skins in background according to ~/.config/rainmeter-native/Rainmeter.ini."""
+    def _worker():
+        with _RELAUNCH_LOCK:
+            stop_engine()
+            if not os.path.isfile(GLOBAL_CONFIG) or not os.path.isfile(ENGINE_BIN):
+                return
+            active_keys = []
+            cp = configparser.ConfigParser(interpolation=None, strict=False)
+            cp.optionxform = str
+            try:
+                with open(GLOBAL_CONFIG, "r", encoding="utf-8", errors="ignore") as f:
+                    cp.read_file(f)
+                for sec in cp.sections():
+                    val = cp.get(sec, "Active", fallback="0").strip()
+                    if val not in ("0", "false", ""):
+                        active_keys.append(sec)
+            except Exception:
+                return
+            if active_keys:
+                subprocess.Popen(
+                    [ENGINE_BIN] + active_keys,
+                    cwd=REPO_DIR,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def apply_basic_widget_design(design_id):
@@ -3784,51 +3825,67 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         self.view_stack.set_visible_child_name("widgets")
 
     # --- WEATHER LOCATION & VILLAGE MANAGER LOGIC ---
-    def _populate_weather_locations_ui(self):
+    def _populate_weather_locations_ui(self, rebuild_model=True):
         self._updating_controls = True
         try:
-            loc_model = Gtk.StringList.new([loc["name"] for loc in self.weather_locations])
-            self.weather_dropdown.set_model(loc_model)
             self.weather_active_idx = max(0, min(len(self.weather_locations) - 1, self.weather_active_idx))
-            self.weather_dropdown.set_selected(self.weather_active_idx)
+            if rebuild_model:
+                loc_model = Gtk.StringList.new([loc["name"] for loc in self.weather_locations])
+                self.weather_dropdown.set_model(loc_model)
+            if self.weather_dropdown.get_selected() != self.weather_active_idx:
+                self.weather_dropdown.set_selected(self.weather_active_idx)
 
             cur = self.weather_locations[self.weather_active_idx]
             self.weather_active_row.set_subtitle(
                 GLib.markup_escape_text(f"{cur['name']} ({cur['lat']:.4f}, {cur['lon']:.4f})")
             )
 
-            for r in self.weather_saved_rows:
-                self.weather_saved_expander.remove(r)
-            self.weather_saved_rows = []
+            if rebuild_model or len(self.weather_saved_rows) != len(self.weather_locations):
+                for r in self.weather_saved_rows:
+                    self.weather_saved_expander.remove(r)
+                self.weather_saved_rows = []
+                self._weather_saved_use_btns = []
 
-            self.weather_saved_expander.set_subtitle(
-                f"{len(self.weather_locations)} saved location{'s' if len(self.weather_locations) != 1 else ''}"
-            )
-
-            for idx, loc in enumerate(self.weather_locations):
-                is_cur = idx == self.weather_active_idx
-                row = Adw.ActionRow(
-                    title=GLib.markup_escape_text(loc["name"]),
-                    subtitle=f"Lat: {loc['lat']:.4f}, Lon: {loc['lon']:.4f}"
-                    + ("  •  Active" if is_cur else ""),
+                self.weather_saved_expander.set_subtitle(
+                    f"{len(self.weather_locations)} saved location{'s' if len(self.weather_locations) != 1 else ''}"
                 )
-                use_btn = Gtk.Button(label="Active ✓" if is_cur else "Use")
-                use_btn.set_valign(Gtk.Align.CENTER)
-                if is_cur:
-                    use_btn.add_css_class("suggested-action")
-                use_btn.connect("clicked", lambda _b, i=idx: self._set_active_weather_index(i))
-                row.add_suffix(use_btn)
 
-                if len(self.weather_locations) > 1:
-                    del_btn = Gtk.Button(icon_name="user-trash-symbolic")
-                    del_btn.set_valign(Gtk.Align.CENTER)
-                    del_btn.add_css_class("flat")
-                    del_btn.set_tooltip_text(f"Remove {loc['name']}")
-                    del_btn.connect("clicked", self._on_delete_weather_location, idx)
-                    row.add_suffix(del_btn)
+                for idx, loc in enumerate(self.weather_locations):
+                    is_cur = idx == self.weather_active_idx
+                    row = Adw.ActionRow(
+                        title=GLib.markup_escape_text(loc["name"]),
+                        subtitle=f"Lat: {loc['lat']:.4f}, Lon: {loc['lon']:.4f}"
+                        + ("  •  Active" if is_cur else ""),
+                    )
+                    use_btn = Gtk.Button(label="Active ✓" if is_cur else "Use")
+                    use_btn.set_valign(Gtk.Align.CENTER)
+                    if is_cur:
+                        use_btn.add_css_class("suggested-action")
+                    use_btn.connect("clicked", lambda _b, i=idx: self._set_active_weather_index(i))
+                    row.add_suffix(use_btn)
+                    self._weather_saved_use_btns.append((row, use_btn, loc))
 
-                self.weather_saved_expander.add_row(row)
-                self.weather_saved_rows.append(row)
+                    if len(self.weather_locations) > 1:
+                        del_btn = Gtk.Button(icon_name="user-trash-symbolic")
+                        del_btn.set_valign(Gtk.Align.CENTER)
+                        del_btn.add_css_class("flat")
+                        del_btn.set_tooltip_text(f"Remove {loc['name']}")
+                        del_btn.connect("clicked", self._on_delete_weather_location, idx)
+                        row.add_suffix(del_btn)
+
+                    self.weather_saved_expander.add_row(row)
+                    self.weather_saved_rows.append(row)
+            else:
+                for idx, (row, use_btn, loc) in enumerate(getattr(self, "_weather_saved_use_btns", [])):
+                    is_cur = idx == self.weather_active_idx
+                    row.set_subtitle(
+                        f"Lat: {loc['lat']:.4f}, Lon: {loc['lon']:.4f}" + ("  •  Active" if is_cur else "")
+                    )
+                    use_btn.set_label("Active ✓" if is_cur else "Use")
+                    if is_cur:
+                        use_btn.add_css_class("suggested-action")
+                    else:
+                        use_btn.remove_css_class("suggested-action")
         finally:
             self._updating_controls = False
         return False
@@ -3846,14 +3903,16 @@ class ControlCenterWindow(Adw.ApplicationWindow):
             for s in self.skins
         )
         if weather_active:
-            self._launch_active_items()
+            save_global_config(self.skins, self.skin_state)
+            relaunch_active_engine_from_config()
+            self._show_toast("Reloaded active weather widgets on desktop")
         else:
             self._show_toast(toast_msg)
 
     def _set_active_weather_index(self, idx):
         self.weather_active_idx = max(0, min(len(self.weather_locations) - 1, idx))
         save_weather_config(self.weather_locations, self.weather_active_idx, self.weather_units)
-        GLib.idle_add(self._populate_weather_locations_ui)
+        GLib.idle_add(lambda: self._populate_weather_locations_ui(rebuild_model=False))
         cur = self.weather_locations[self.weather_active_idx]
         self._reload_if_weather_visible(
             f"Weather location set to '{cur['name']}' (enable BasicWeather to view)"
@@ -4832,13 +4891,13 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         self._show_toast("Engine stopped and desktop cleared")
 
     def _on_open_weather_forecast_clicked(self, _btn):
-        def _on_location_updated():
+        def _on_location_updated(rebuild_model=True):
             (
                 self.weather_locations,
                 self.weather_active_idx,
                 self.weather_units,
             ) = load_weather_config()
-            GLib.idle_add(self._populate_weather_locations_ui)
+            GLib.idle_add(lambda: self._populate_weather_locations_ui(rebuild_model=rebuild_model))
             self._updating_controls = True
             try:
                 self.weather_units_dropdown.set_selected(1 if self.weather_units == "imperial" else 0)
@@ -4874,9 +4933,10 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
 
         self._updating = False
         self._forecast_data = None
+        self._forecast_seq = 0
         self._search_results = []
         self._search_rows = []
-        self._daily_rows = []
+        self._daily_slots = []
 
         self._build_ui()
         self._refresh_forecast()
@@ -4893,7 +4953,7 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
 
         refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
         refresh_btn.set_tooltip_text("Refresh live weather forecast")
-        refresh_btn.connect("clicked", lambda _b: self._refresh_forecast())
+        refresh_btn.connect("clicked", lambda _b: self._refresh_forecast(force=True))
         header.pack_start(refresh_btn)
 
         loc_model = Gtk.StringList.new([l["name"] for l in self.weather_locations])
@@ -5024,6 +5084,8 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
         cur_loc = self.weather_locations[self.weather_active_idx]
         self.hero_city_lbl = Gtk.Label(label=cur_loc["name"], xalign=0)
         self.hero_city_lbl.add_css_class("title-3")
+        self.hero_city_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        self.hero_city_lbl.set_max_width_chars(28)
         title_col.append(self.hero_city_lbl)
 
         self.hero_temp_lbl = Gtk.Label(label="--°", xalign=0)
@@ -5032,6 +5094,8 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
 
         self.hero_cond_lbl = Gtk.Label(label="Loading forecast…", xalign=0)
         self.hero_cond_lbl.add_css_class("dim-label")
+        self.hero_cond_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        self.hero_cond_lbl.set_max_width_chars(38)
         title_col.append(self.hero_cond_lbl)
 
         right_hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
@@ -5063,12 +5127,23 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
         self.hourly_chart.set_draw_func(self._draw_hourly_chart)
         chart_frame.set_child(self.hourly_chart)
 
-        # 7-Day Daily Forecast Group
+        # 7-Day Daily Forecast Group (pre-allocate 7 reusable rows for zero UI churn)
         self.daily_group = Adw.PreferencesGroup(
             title="7-Day Forecast",
             description="Daily conditions, rain chance, low and high temperatures",
         )
         vbox.append(self.daily_group)
+        for _ in range(7):
+            row = Adw.ActionRow(title="—", subtitle="—")
+            ico = Gtk.Image.new_from_icon_name("weather-overcast-symbolic")
+            ico.set_pixel_size(24)
+            row.add_prefix(ico)
+            range_lbl = Gtk.Label(label="--")
+            range_lbl.set_valign(Gtk.Align.CENTER)
+            row.add_suffix(range_lbl)
+            row.set_visible(False)
+            self.daily_group.add(row)
+            self._daily_slots.append((row, ico, range_lbl))
 
     def _show_toast(self, msg):
         toast = Adw.Toast.new(GLib.markup_escape_text(msg))
@@ -5078,19 +5153,24 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
     def _on_toggle_add_panel(self, btn):
         self.add_drawer.set_visible(btn.get_active())
 
-    def _sync_and_reload(self, msg=None):
+    def _sync_and_reload(self, msg=None, rebuild_model=False, force=False):
         save_weather_config(self.weather_locations, self.weather_active_idx, self.weather_units)
-        self._updating = True
-        try:
-            self.loc_dropdown.set_model(Gtk.StringList.new([l["name"] for l in self.weather_locations]))
-            self.loc_dropdown.set_selected(self.weather_active_idx)
-        finally:
-            self._updating = False
+        if rebuild_model:
+            def _update_dropdown():
+                self._updating = True
+                try:
+                    self.loc_dropdown.set_model(Gtk.StringList.new([l["name"] for l in self.weather_locations]))
+                    self.loc_dropdown.set_selected(self.weather_active_idx)
+                finally:
+                    self._updating = False
+                return False
+
+            GLib.idle_add(_update_dropdown)
 
         relaunch_active_engine_from_config()
         if self.on_change_cb:
-            self.on_change_cb()
-        self._refresh_forecast()
+            GLib.idle_add(lambda: (self.on_change_cb(rebuild_model), False)[1])
+        self._refresh_forecast(force=force)
         if msg:
             self._show_toast(msg)
 
@@ -5098,15 +5178,18 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
         if self._updating:
             return
         idx = int(dropdown.get_selected())
-        if 0 <= idx < len(self.weather_locations):
+        if 0 <= idx < len(self.weather_locations) and idx != self.weather_active_idx:
             self.weather_active_idx = idx
-            self._sync_and_reload(f"Switched weather to '{self.weather_locations[idx]['name']}'")
+            self._sync_and_reload(
+                f"Switched weather to '{self.weather_locations[idx]['name']}'",
+                rebuild_model=False,
+            )
 
     def _on_unit_changed(self, dropdown, _pspec):
         if self._updating:
             return
         self.weather_units = "imperial" if int(dropdown.get_selected()) == 1 else "metric"
-        self._sync_and_reload()
+        self._sync_and_reload(rebuild_model=False)
 
     def _on_search_clicked(self, _btn):
         q = self.search_entry.get_text().strip()
@@ -5188,7 +5271,7 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
             self.weather_active_idx = 0
         self.search_results_group.set_visible(False)
         self.add_loc_toggle.set_active(False)
-        self._sync_and_reload(f"Added & loaded weather for '{name}'")
+        self._sync_and_reload(f"Added & loaded weather for '{name}'", rebuild_model=True)
 
     def _on_pick_search_item(self, _b, item):
         GLib.idle_add(lambda: (self._add_and_activate(item["name"], item["lat"], item["lon"]), False)[1])
@@ -5210,22 +5293,32 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
         self.manual_expander.set_expanded(False)
         self._add_and_activate(name, lat, lon)
 
-    def _refresh_forecast(self):
+    def _refresh_forecast(self, force=False):
         loc = self.weather_locations[self.weather_active_idx]
+        self._forecast_seq += 1
+        seq = self._forecast_seq
         self.hero_city_lbl.set_label(loc["name"])
         self.hero_cond_lbl.set_label(f"Fetching forecast for ({loc['lat']:.4f}, {loc['lon']:.4f})…")
 
         def _worker():
             try:
-                data = fetch_full_weather_forecast(loc["lat"], loc["lon"], self.weather_units)
-                GLib.idle_add(lambda: (self._apply_forecast_data(loc, data), False)[1])
+                data = fetch_full_weather_forecast(loc["lat"], loc["lon"], self.weather_units, force=force)
+                GLib.idle_add(lambda: (self._apply_forecast_data(loc, data, seq), False)[1])
             except Exception as exc:
                 err = str(exc)
-                GLib.idle_add(lambda: (self.hero_cond_lbl.set_label(f"Could not fetch weather: {err}"), False)[1])
+
+                def _err_ui():
+                    if seq == self._forecast_seq:
+                        self.hero_cond_lbl.set_label(f"Could not fetch weather: {err}")
+                    return False
+
+                GLib.idle_add(_err_ui)
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _apply_forecast_data(self, loc, data):
+    def _apply_forecast_data(self, loc, data, seq=None):
+        if seq is not None and seq != self._forecast_seq:
+            return
         self._forecast_data = data
         cur = data.get("current", {})
         daily = data.get("daily", {})
@@ -5266,11 +5359,7 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
 
         self.hourly_chart.queue_draw()
 
-        # Populate 7-Day rows
-        for r in self._daily_rows:
-            self.daily_group.remove(r)
-        self._daily_rows = []
-
+        # Update pre-allocated 7-Day rows in-place (zero GTK4 layout teardown)
         import datetime
 
         dates = daily.get("time", [])
@@ -5279,7 +5368,10 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
         tmins = daily.get("temperature_2m_min", [])
         rpops = daily.get("precipitation_probability_max", [])
 
-        for i in range(min(7, len(dates))):
+        for i, (row, ico, range_lbl) in enumerate(self._daily_slots):
+            if i >= len(dates):
+                row.set_visible(False)
+                continue
             try:
                 dt = datetime.date.fromisoformat(dates[i])
                 day_lbl = "Today" if i == 0 else dt.strftime("%A, %b %d")
@@ -5291,20 +5383,11 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
             lo = round(tmins[i]) if i < len(tmins) else 0
             pop = round(rpops[i]) if i < len(rpops) and rpops[i] is not None else 0
 
-            row = Adw.ActionRow(
-                title=GLib.markup_escape_text(day_lbl),
-                subtitle=GLib.markup_escape_text(f"{c_txt}  •  Rain chance {pop}%"),
-            )
-            ico = Gtk.Image.new_from_icon_name(c_ico)
-            ico.set_pixel_size(24)
-            row.add_prefix(ico)
-
-            range_lbl = Gtk.Label(label=f"Low {lo}{t_unit}   →   High {hi}{t_unit}")
-            range_lbl.set_valign(Gtk.Align.CENTER)
-            row.add_suffix(range_lbl)
-
-            self.daily_group.add(row)
-            self._daily_rows.append(row)
+            row.set_title(GLib.markup_escape_text(day_lbl))
+            row.set_subtitle(GLib.markup_escape_text(f"{c_txt}  •  Rain chance {pop}%"))
+            ico.set_from_icon_name(c_ico)
+            range_lbl.set_label(f"Low {lo}{t_unit}   →   High {hi}{t_unit}")
+            row.set_visible(True)
 
     def _draw_hourly_chart(self, _area, cr, width, height):
         # Background
