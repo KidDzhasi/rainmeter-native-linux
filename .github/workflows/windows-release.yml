@@ -1,0 +1,90 @@
+name: Build Windows Standalone .exe and .rmskin
+
+on:
+  push:
+    branches:
+      - windows-port
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - windows-port
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.1.0)'
+        required: false
+        default: '1.1.0'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.12 on Windows
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 🛠️ Install PyInstaller & psutil
+        run: |
+          python -m pip install --upgrade pip pyinstaller psutil
+
+      - name: 📦 Build Windows Rainmeter .rmskin Package
+        shell: pwsh
+        run: |
+          $ver = "1.1.0"
+          if ("${{ github.ref_name }}" -like "v*") {
+            $ver = "${{ github.ref_name }}".TrimStart("v")
+          }
+          python windows/build_rmskin.py $ver "dist/TradRainmeter_$ver.rmskin"
+
+      - name: ⚙️ Compile Standalone TradRainmeter-Windows-x64.exe
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name "TradRainmeter-Windows-x64" `
+            --icon "assets/trad-engine.ico" `
+            --add-data "assets;assets" `
+            --add-data "suites;suites" `
+            --add-data "widgets;widgets" `
+            --add-data "windows/build_rmskin.py;windows" `
+            windows/trad_rainmeter_win.py
+
+      - name: 🗜️ Create Portable Windows ZIP Bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/TradRainmeter-Windows" | Out-Null
+          Copy-Item "dist/TradRainmeter-Windows-x64.exe" "dist/TradRainmeter-Windows/TradRainmeter.exe"
+          Copy-Item "dist/TradRainmeter_*.rmskin" "dist/TradRainmeter-Windows/"
+          Copy-Item "windows/README-WINDOWS.md" "dist/TradRainmeter-Windows/README-WINDOWS.md"
+          Copy-Item -Recurse -Force "assets" "dist/TradRainmeter-Windows/assets"
+          Copy-Item -Recurse -Force "suites" "dist/TradRainmeter-Windows/suites"
+          Copy-Item -Recurse -Force "widgets" "dist/TradRainmeter-Windows/widgets"
+          Compress-Archive -Force -Path "dist/TradRainmeter-Windows/*" -DestinationPath "dist/TradRainmeter-Windows-Portable-x64.zip"
+
+      - name: 📤 Upload Windows Build Artifacts (.exe + .rmskin + .zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: TradRainmeter-Windows-x64-Packages
+          path: |
+            dist/TradRainmeter-Windows-x64.exe
+            dist/TradRainmeter_*.rmskin
+            dist/TradRainmeter-Windows-Portable-x64.zip
+
+      - name: 🚀 Attach Windows Packages to GitHub Release (on Tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/TradRainmeter-Windows-x64.exe
+            dist/TradRainmeter_*.rmskin
+            dist/TradRainmeter-Windows-Portable-x64.zip
+          generate_release_notes: true
