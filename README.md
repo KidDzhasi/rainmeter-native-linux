@@ -67,3 +67,12 @@ chmod +x scripts/build-flatpak.sh
 flatpak install --user dist/trad-rainmeter.flatpak
 flatpak run com.github.kiddzhasi.TradRainmeter
 ```
+
+### Windows 10 & Windows 11 (Standalone `.exe` + `.rmskin`)
+
+1. **Standalone Windows App (`TradRainmeter-Windows-x64.exe`):**
+   - Download `TradRainmeter-Windows-x64.exe` (or `TradRainmeter-Windows-Portable-x64.zip`) from GitHub Actions / Releases, or build locally on Windows via `windows\build-windows-exe.bat`.
+   - Includes the Win32 pinned desktop widget engine (`HWND_BOTTOM`), 3-tab Control Center, 10 Themes, 6 Shapes, 4 Designs, Music Players, Audio Visualizers, and Live Village Weather Forecast.
+2. **Classic Windows Rainmeter Skin Package (`TradRainmeter_1.1.0.rmskin`):**
+   - Double-click `TradRainmeter_1.1.0.rmskin` on Windows (or generate it via `python windows/build_rmskin.py`) to install all Trad Suites and Widgets into classic Windows Rainmeter 4.5+.
+   - See [windows/README-WINDOWS.md](windows/README-WINDOWS.md) for full details.
