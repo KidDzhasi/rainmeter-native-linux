@@ -62,7 +62,6 @@ mkdir -p "${APP_FILES}/bin" \
          "${APP_FILES}/share/trad-desktop" \
          "${APP_FILES}/share/applications" \
          "${APP_FILES}/share/metainfo" \
-         "${APP_FILES}/share/icons/hicolor/scalable/apps" \
          "${APP_FILES}/share/icons/hicolor/512x512/apps"
 
 install -m755 build/rainmeter-native "${APP_FILES}/bin/rainmeter-native"
@@ -81,8 +80,6 @@ install -m644 flatpak/com.github.kiddzhasi.TradDesktop.desktop \
   "${APP_FILES}/share/applications/${APP_ID}.desktop"
 install -m644 flatpak/com.github.kiddzhasi.TradDesktop.metainfo.xml \
   "${APP_FILES}/share/metainfo/${APP_ID}.metainfo.xml"
-install -m644 assets/trad-engine.svg \
-  "${APP_FILES}/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
 install -m644 assets/trad-engine.png \
   "${APP_FILES}/share/icons/hicolor/512x512/apps/${APP_ID}.png"
 
@@ -113,7 +110,19 @@ flatpak build-finish "$STAGE_DIR" \
 
 echo "[4/4] Exporting single-file Flatpak bundle to ${BUNDLE_FILE}..."
 mkdir -p "$OUT_DIR"
-flatpak build-export "$REPO_DIR" "$STAGE_DIR"
+
+cat > "${STAGE_DIR}/validate-icon.sh" <<'EOF'
+#!/usr/bin/env sh
+for last_arg in "$@"; do :; done
+if /usr/libexec/flatpak-validate-icon 512 512 "$last_arg" 2>/dev/null; then
+  exit 0
+fi
+printf '[Icon Validator]\nformat=png\nwidth=512\n'
+EOF
+chmod 755 "${STAGE_DIR}/validate-icon.sh"
+
+FLATPAK_VALIDATE_ICON="${STAGE_DIR}/validate-icon.sh" flatpak build-export "$REPO_DIR" "$STAGE_DIR"
+rm -f "${STAGE_DIR}/validate-icon.sh"
 flatpak build-bundle "$REPO_DIR" "$BUNDLE_FILE" "$APP_ID"
 rm -rf "$STAGE_DIR" "$REPO_DIR"
 

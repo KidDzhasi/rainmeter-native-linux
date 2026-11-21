@@ -57,7 +57,7 @@ jobs:
       - name: 📦 Build Flatpak Bundle
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak
+          sudo apt-get install -y flatpak librsvg2-common shared-mime-info
           sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           sudo flatpak install -y flathub org.gnome.Platform/x86_64/51 org.gnome.Sdk/x86_64/51
           chmod +x scripts/build-flatpak.sh
