@@ -521,8 +521,30 @@ void SkinInstance::paintScene() {
 // Load — factory method
 // ---------------------------------------------------------------------------
 
-std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath, int overrideMonitor) {
+std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &rawIniPath, int overrideMonitor) {
   std::unique_ptr<SkinInstance> inst(new SkinInstance());
+
+  std::string iniPath = rawIniPath;
+  int tagMonitor = -1;
+  const std::size_t atPos = rawIniPath.rfind('@');
+  if (atPos != std::string::npos && atPos > 4) {
+    const std::string suffix = rawIniPath.substr(atPos + 1);
+    bool allDigits = !suffix.empty();
+    for (char c : suffix) {
+      if (c < '0' || c > '9') {
+        allDigits = false;
+        break;
+      }
+    }
+    if (allDigits) {
+      iniPath = rawIniPath.substr(0, atPos);
+      try {
+        tagMonitor = std::stoi(suffix);
+      } catch (...) {
+        tagMonitor = -1;
+      }
+    }
+  }
   inst->iniPath_ = iniPath;
 
   // Pre-load common resource files to ensure wildcards and globals are available
@@ -643,26 +665,39 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath, int
         }
       });
 
-  // Calculate ConfigName for global layout
-  std::string configName = iniPath;
+  // Calculate ConfigName for global layout (prefer exact @monitor section if present)
+  std::string configName = rawIniPath;
   std::string skinsPath = fs::path(Utils::ResolvePath("~/.config/rainmeter-native/Skins")).lexically_normal().string();
   std::string absoluteIni = fs::absolute(Utils::ResolvePath(iniPath)).lexically_normal().string();
-  
-  if (absoluteIni.find(skinsPath) == 0) {
-      configName = absoluteIni.substr(skinsPath.length());
-      if (!configName.empty() && configName[0] == '/') {
-          configName = configName.substr(1);
-      }
-      configName = fs::path(configName).parent_path().string();
-  }
   
   std::string rainmeterIniPath = Utils::ResolvePath("~/.config/rainmeter-native/Rainmeter.ini");
   IniLexer globalConfig(rainmeterIniPath);
   if (globalConfig.data().find(configName) == globalConfig.data().end()) {
-    for (const auto &sec : globalConfig.sectionOrder()) {
-      if (sec == iniPath || absoluteIni.find(sec) != std::string::npos) {
-        configName = sec;
-        break;
+    std::string wantedSuffix = (tagMonitor >= 0) ? ("@" + std::to_string(tagMonitor)) : "";
+    bool matched = false;
+    if (!wantedSuffix.empty()) {
+      for (const auto &sec : globalConfig.sectionOrder()) {
+        if (sec.size() > wantedSuffix.size() &&
+            sec.compare(sec.size() - wantedSuffix.size(), wantedSuffix.size(), wantedSuffix) == 0) {
+          std::string baseSec = sec.substr(0, sec.size() - wantedSuffix.size());
+          if (baseSec == iniPath || absoluteIni.find(baseSec) != std::string::npos) {
+            configName = sec;
+            matched = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!matched) {
+      if (globalConfig.data().find(iniPath) != globalConfig.data().end()) {
+        configName = iniPath;
+      } else {
+        for (const auto &sec : globalConfig.sectionOrder()) {
+          if (sec == iniPath || absoluteIni.find(sec) != std::string::npos) {
+            configName = sec;
+            break;
+          }
+        }
       }
     }
   }
@@ -672,7 +707,12 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath, int
   if (monitorStr.empty()) monitorStr = "0";
   int monitorIndex = overrideMonitor >= 0
                          ? overrideMonitor
-                         : static_cast<int>(inst->math_->evaluateOr(monitorStr, 0));
+                         : (tagMonitor >= 0
+                                ? tagMonitor
+                                : static_cast<int>(inst->math_->evaluateOr(monitorStr, 0)));
+  if (inst->window_.getMonitorCount() > 0) {
+    monitorIndex = std::clamp(monitorIndex, 0, inst->window_.getMonitorCount() - 1);
+  }
   inst->monitorIndex_ = monitorIndex;
 
   int screenWidth = inst->window_.getScreenWidth(monitorIndex);
@@ -697,9 +737,52 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath, int
       configName, "Scale", getKeyCI(inst->skin_, "Rainmeter", "Scale"));
   if (!scaleStr.empty()) {
     inst->userScale_ = inst->math_->evaluateOr(scaleStr, 0.0);
-    if (inst->userScale_ > 0.1 && inst->userScale_ <= 5.0) {
-      inst->effectiveScale_ = inst->userScale_;
+  }
+
+  double targetW = inst->math_->evaluateOr(
+      inst->skin_.getOr("Rainmeter", "SkinWidth", ""), 0);
+  double targetH = inst->math_->evaluateOr(
+      inst->skin_.getOr("Rainmeter", "SkinHeight", ""), 0);
+  if (targetW <= 0 || targetH <= 0) {
+    double estMaxX = kDefaultWidth;
+    double estMaxY = kDefaultHeight;
+    for (const std::string &secName : inst->skin_.sectionOrder()) {
+      auto dIt = inst->skin_.data().find(secName);
+      if (dIt == inst->skin_.data().end()) continue;
+      if (dIt->second.find("Meter") == dIt->second.end()) continue;
+      double mx = resolveNum(inst->skin_, &inst->measures_, *inst->math_, secName, "X", 0);
+      double my = resolveNum(inst->skin_, &inst->measures_, *inst->math_, secName, "Y", 0);
+      double mw = resolveNum(inst->skin_, &inst->measures_, *inst->math_, secName, "W", 40);
+      double mh = resolveNum(inst->skin_, &inst->measures_, *inst->math_, secName, "H", 24);
+      estMaxX = std::max(estMaxX, mx + mw);
+      estMaxY = std::max(estMaxY, my + mh);
     }
+    if (targetW <= 0) targetW = estMaxX;
+    if (targetH <= 0) targetH = estMaxY;
+  }
+
+  int initWidth = std::max(1, static_cast<int>(std::ceil(targetW)));
+  int initHeight = std::max(1, static_cast<int>(std::ceil(targetH)));
+  inst->unscaledWidth_ = initWidth;
+  inst->unscaledHeight_ = initHeight;
+
+  if (inst->autoFit_) {
+    if (initWidth >= 1000 || initHeight >= 650) {
+      inst->effectiveScale_ = std::min(static_cast<double>(screenWidth) / initWidth,
+                                       static_cast<double>(screenHeight) / initHeight);
+    } else {
+      inst->effectiveScale_ = std::clamp(static_cast<double>(screenHeight) / 768.0, 0.6, 2.5);
+      if (initWidth * inst->effectiveScale_ > screenWidth) {
+        inst->effectiveScale_ = static_cast<double>(screenWidth) / initWidth;
+      }
+    }
+  } else if (inst->userScale_ > 0.1 && inst->userScale_ <= 5.0) {
+    inst->effectiveScale_ = inst->userScale_;
+  } else if (initWidth > screenWidth || initHeight > screenHeight) {
+    inst->effectiveScale_ = std::min(static_cast<double>(screenWidth) / initWidth,
+                                     static_cast<double>(screenHeight) / initHeight);
+  } else {
+    inst->effectiveScale_ = 1.0;
   }
 
   std::string internalX = getKeyCI(inst->skin_, "Rainmeter", "WindowX");
@@ -737,6 +820,17 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath, int
   inst->baseOffsetX_ = static_cast<int>(inst->math_->evaluateOr(resolvedX, 0));
   inst->baseOffsetY_ = static_cast<int>(inst->math_->evaluateOr(resolvedY, 0));
 
+  // If AutoFit is enabled and explicit coordinates were authored for a reference monitor size
+  // (e.g. RefWidth=1366, RefHeight=768), scale the coordinates proportionally to this monitor.
+  if (inst->autoFit_ && (inst->hasExplicitX_ || inst->hasExplicitY_)) {
+    int refW = static_cast<int>(inst->math_->evaluateOr(globalConfig.getOr(configName, "RefWidth", "0"), 0));
+    int refH = static_cast<int>(inst->math_->evaluateOr(globalConfig.getOr(configName, "RefHeight", "0"), 0));
+    if (refW > 0 && refH > 0 && (refW != screenWidth || refH != screenHeight)) {
+      inst->baseOffsetX_ = static_cast<int>(std::lround(inst->baseOffsetX_ * (static_cast<double>(screenWidth) / refW)));
+      inst->baseOffsetY_ = static_cast<int>(std::lround(inst->baseOffsetY_ * (static_cast<double>(screenHeight) / refH)));
+    }
+  }
+
   std::string anchorX = globalConfig.getOr(
       configName, "AnchorX", getKeyCI(inst->skin_, "Rainmeter", "AnchorX"));
   if (anchorX.empty()) anchorX = "left";
@@ -755,16 +849,6 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &iniPath, int
   
   if (anchorY == "top") anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
   else if (anchorY == "bottom") anchor |= ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
-
-  double targetW = inst->math_->evaluateOr(
-      inst->skin_.getOr("Rainmeter", "SkinWidth", ""), 0);
-  double targetH = inst->math_->evaluateOr(
-      inst->skin_.getOr("Rainmeter", "SkinHeight", ""), 0);
-  
-  int initWidth = targetW > 0 ? static_cast<int>(targetW) : kDefaultWidth;
-  int initHeight = targetH > 0 ? static_cast<int>(targetH) : kDefaultHeight;
-  inst->unscaledWidth_ = initWidth;
-  inst->unscaledHeight_ = initHeight;
 
   int scaledInitW = std::max(1, static_cast<int>(std::ceil(initWidth * inst->effectiveScale_)));
   int scaledInitH = std::max(1, static_cast<int>(std::ceil(initHeight * inst->effectiveScale_)));
@@ -808,7 +892,8 @@ void SkinInstance::computeWindowPosition(int winW, int winH, int &outX,
   int monH = window_.getScreenHeight(monitorIndex_);
 
   if (hasExplicitX_) {
-    outX = monX + baseOffsetX_;
+    int maxOffsetX = std::max(0, monW - winW);
+    outX = monX + std::clamp(baseOffsetX_, 0, maxOffsetX);
   } else if (anchorX_ == "center") {
     outX = monX + (monW - winW) / 2;
   } else if (anchorX_ == "right") {
@@ -818,7 +903,8 @@ void SkinInstance::computeWindowPosition(int winW, int winH, int &outX,
   }
 
   if (hasExplicitY_) {
-    outY = monY + baseOffsetY_;
+    int maxOffsetY = std::max(0, monH - winH);
+    outY = monY + std::clamp(baseOffsetY_, 0, maxOffsetY);
   } else if (anchorY_ == "center") {
     outY = monY + (monH - winH) / 2;
   } else if (anchorY_ == "bottom") {
@@ -915,20 +1001,20 @@ void SkinInstance::Render(double dtMs) {
 
     int monW = window_.getScreenWidth(monitorIndex_);
     int monH = window_.getScreenHeight(monitorIndex_);
-    if (userScale_ > 0.0) {
-      effectiveScale_ = userScale_;
-    } else if (autoFit_) {
+    if (autoFit_) {
       if (rawW >= 1000 || rawH >= 650) {
         // Full-screen suite: scale to fit monitor dimensions
         effectiveScale_ = std::min(static_cast<double>(monW) / rawW,
                                    static_cast<double>(monH) / rawH);
       } else {
-        // Compact suite: scale proportionally to monitor height (768p baseline)
+        // Compact suite / widget: scale proportionally to monitor height (768p baseline)
         effectiveScale_ = std::clamp(static_cast<double>(monH) / 768.0, 0.6, 2.5);
         if (rawW * effectiveScale_ > monW) {
           effectiveScale_ = static_cast<double>(monW) / rawW;
         }
       }
+    } else if (userScale_ > 0.1 && userScale_ <= 5.0) {
+      effectiveScale_ = userScale_;
     } else if (rawW > monW || rawH > monH) {
       effectiveScale_ = std::min(static_cast<double>(monW) / rawW,
                                  static_cast<double>(monH) / rawH);

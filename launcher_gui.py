@@ -2776,8 +2776,8 @@ def stop_engine():
 
 
 def detect_monitors():
-    """Return list of connected monitors with geometry and scale."""
-    monitors = []
+    """Return list of connected monitors sorted left-to-right, top-to-bottom (matching C++ engine)."""
+    raw_monitors = []
     try:
         display = Gdk.Display.get_default()
         if display is not None:
@@ -2787,10 +2787,11 @@ def detect_monitors():
                 geom = m.get_geometry()
                 scale = m.get_scale_factor()
                 connector = m.get_connector() or f"Display-{i}"
-                monitors.append(
+                raw_monitors.append(
                     {
-                        "index": i,
-                        "name": f"Monitor {i} ({connector} — {geom.width}×{geom.height})",
+                        "x": geom.x,
+                        "y": geom.y,
+                        "connector": connector,
                         "width": max(320, geom.width),
                         "height": max(240, geom.height),
                         "scale": scale,
@@ -2799,10 +2800,27 @@ def detect_monitors():
     except Exception:
         pass
 
+    raw_monitors.sort(key=lambda item: (item["x"], item["y"]))
+    monitors = []
+    for idx, rm in enumerate(raw_monitors):
+        monitors.append(
+            {
+                "index": idx,
+                "x": rm["x"],
+                "y": rm["y"],
+                "name": f"Monitor {idx} ({rm['connector']} — {rm['width']}×{rm['height']})",
+                "width": rm["width"],
+                "height": rm["height"],
+                "scale": rm["scale"],
+            }
+        )
+
     if not monitors:
         monitors.append(
             {
                 "index": 0,
+                "x": 0,
+                "y": 0,
                 "name": "Monitor 0 (Default — 1366×768)",
                 "width": 1366,
                 "height": 768,
@@ -3064,12 +3082,15 @@ def load_global_config(skins):
         state[s["key"]] = {
             "active": False,
             "monitor": 0,
+            "monitors": [],
             "anchor_x": s["default_anchor_x"],
             "anchor_y": s["default_anchor_y"],
             "use_custom_pos": has_def_xy,
             "x": s["default_x"] if has_def_xy else 0,
             "y": s["default_y"] if has_def_xy else 0,
-            "auto_fit": s["is_suite"],
+            "ref_w": 1366,
+            "ref_h": 768,
+            "auto_fit": True,
             "scale": 1.0,
         }
 
@@ -3077,6 +3098,7 @@ def load_global_config(skins):
         for s in skins:
             if "TradSunset" in s["key"]:
                 state[s["key"]]["active"] = True
+                state[s["key"]]["monitors"] = [0]
                 break
         return state
 
@@ -3089,13 +3111,22 @@ def load_global_config(skins):
         return state
 
     for sec in cp.sections():
+        base_sec = sec
+        tag_mon = None
+        if "@" in sec:
+            r_at = sec.rfind("@")
+            suffix = sec[r_at + 1 :]
+            if suffix.isdigit():
+                base_sec = sec[:r_at]
+                tag_mon = int(suffix)
+
         matched_key = None
         for s in skins:
             if (
-                sec == s["key"]
-                or sec == s["abs_path"]
-                or sec == s.get("alt_key")
-                or s["abs_path"].endswith(sec)
+                base_sec == s["key"]
+                or base_sec == s["abs_path"]
+                or base_sec == s.get("alt_key")
+                or s["abs_path"].endswith(base_sec)
             ):
                 matched_key = s["key"]
                 break
@@ -3104,18 +3135,50 @@ def load_global_config(skins):
 
         st = state[matched_key]
         sec_map = {k.lower(): v.strip() for k, v in cp.items(sec)}
-        st["active"] = sec_map.get("active", "0") not in ("0", "false", "")
+        is_act = sec_map.get("active", "0") not in ("0", "false", "")
+        mon_val = tag_mon if tag_mon is not None else 0
         if "monitor" in sec_map:
             try:
-                st["monitor"] = max(0, int(float(sec_map["monitor"])))
+                mon_val = int(float(sec_map["monitor"]))
             except ValueError:
                 pass
+        if is_act:
+            st["active"] = True
+            if mon_val >= 0 and mon_val not in st["monitors"]:
+                st["monitors"].append(mon_val)
+                st["monitors"].sort()
+            if len(st["monitors"]) > 1:
+                st["monitor"] = -1
+            elif st["monitors"]:
+                st["monitor"] = st["monitors"][0]
+            else:
+                st["monitor"] = max(0, mon_val)
+        elif not st["active"]:
+            st["monitor"] = max(0, mon_val)
+
         if "anchorx" in sec_map and sec_map["anchorx"].lower() in ("left", "center", "right"):
             st["anchor_x"] = sec_map["anchorx"].lower()
         if "anchory" in sec_map and sec_map["anchory"].lower() in ("top", "center", "bottom"):
             st["anchor_y"] = sec_map["anchory"].lower()
+        if "scale" in sec_map:
+            try:
+                st["scale"] = max(0.25, min(3.0, float(sec_map["scale"])))
+            except ValueError:
+                pass
         if "autofit" in sec_map:
             st["auto_fit"] = sec_map["autofit"].lower() in ("1", "true", "yes")
+        elif "scale" in sec_map:
+            st["auto_fit"] = False
+        if "refwidth" in sec_map:
+            try:
+                st["ref_w"] = max(320, int(float(sec_map["refwidth"])))
+            except ValueError:
+                pass
+        if "refheight" in sec_map:
+            try:
+                st["ref_h"] = max(240, int(float(sec_map["refheight"])))
+            except ValueError:
+                pass
         if "windowx" in sec_map or "windowy" in sec_map:
             try:
                 st["x"] = int(float(sec_map.get("windowx", "0")))
@@ -3123,18 +3186,30 @@ def load_global_config(skins):
                 st["use_custom_pos"] = True
             except ValueError:
                 pass
-        if "scale" in sec_map:
-            try:
-                st["scale"] = max(0.25, min(3.0, float(sec_map["scale"])))
-                st["auto_fit"] = False
-            except ValueError:
-                pass
 
     return state
 
 
-def save_global_config(skins, state):
-    """Write ~/.config/rainmeter-native/Rainmeter.ini from current UI state."""
+def get_active_monitors_for_skin(st, num_monitors=1):
+    """Return sorted list of monitor indices on which a skin should be displayed."""
+    if not st.get("active", False):
+        return []
+    if st.get("monitor", 0) == -1:
+        return list(range(max(1, num_monitors)))
+    mons = [m for m in st.get("monitors", []) if 0 <= m < max(1, num_monitors)]
+    if mons:
+        return sorted(list(dict.fromkeys(mons)))
+    m_single = max(0, min(max(1, num_monitors) - 1, int(st.get("monitor", 0))))
+    return [m_single]
+
+
+def save_global_config(skins, state, num_monitors=None):
+    """Write ~/.config/rainmeter-native/Rainmeter.ini from current UI state (including per-monitor @0/@1 sections)."""
+    if num_monitors is None:
+        try:
+            num_monitors = max(1, len(detect_monitors()))
+        except Exception:
+            num_monitors = 1
     os.makedirs(CONFIG_DIR, exist_ok=True)
     lines = ["; Rainmeter Native Global Configuration\n"]
     for s in skins:
@@ -3142,25 +3217,42 @@ def save_global_config(skins, state):
         st = state.get(key)
         if not st:
             continue
-        if (
-            not st["active"]
-            and not st["use_custom_pos"]
-            and st["auto_fit"] == s["is_suite"]
-            and abs(st["scale"] - 1.0) < 1e-3
-        ):
+        act_mons = get_active_monitors_for_skin(st, num_monitors)
+        if not act_mons:
+            if not st.get("use_custom_pos", False) and abs(st.get("scale", 1.0) - 1.0) < 1e-3:
+                continue
+            lines.append(f"[{key}]\n")
+            lines.append("Active=0\n")
+            lines.append(f"Monitor={max(0, st.get('monitor', 0))}\n")
+            lines.append(f"AnchorX={st['anchor_x'].capitalize()}\n")
+            lines.append(f"AnchorY={st['anchor_y'].capitalize()}\n")
+            lines.append(f"AutoFit={1 if st['auto_fit'] else 0}\n")
+            if not st["auto_fit"]:
+                lines.append(f"Scale={st['scale']:.2f}\n")
+            if st["use_custom_pos"]:
+                lines.append(f"RefWidth={int(st.get('ref_w', 1366))}\n")
+                lines.append(f"RefHeight={int(st.get('ref_h', 768))}\n")
+                lines.append(f"WindowX={int(st['x'])}\n")
+                lines.append(f"WindowY={int(st['y'])}\n")
+            lines.append("\n")
             continue
-        lines.append(f"[{key}]\n")
-        lines.append(f"Active={1 if st['active'] else 0}\n")
-        lines.append(f"Monitor={st['monitor']}\n")
-        lines.append(f"AnchorX={st['anchor_x'].capitalize()}\n")
-        lines.append(f"AnchorY={st['anchor_y'].capitalize()}\n")
-        lines.append(f"AutoFit={1 if st['auto_fit'] else 0}\n")
-        if not st["auto_fit"]:
-            lines.append(f"Scale={st['scale']:.2f}\n")
-        if st["use_custom_pos"]:
-            lines.append(f"WindowX={int(st['x'])}\n")
-            lines.append(f"WindowY={int(st['y'])}\n")
-        lines.append("\n")
+
+        for m_idx in act_mons:
+            sec_name = f"{key}@{m_idx}" if len(act_mons) > 1 or m_idx > 0 else key
+            lines.append(f"[{sec_name}]\n")
+            lines.append("Active=1\n")
+            lines.append(f"Monitor={m_idx}\n")
+            lines.append(f"AnchorX={st['anchor_x'].capitalize()}\n")
+            lines.append(f"AnchorY={st['anchor_y'].capitalize()}\n")
+            lines.append(f"AutoFit={1 if st['auto_fit'] else 0}\n")
+            if not st["auto_fit"]:
+                lines.append(f"Scale={st['scale']:.2f}\n")
+            if st["use_custom_pos"]:
+                lines.append(f"RefWidth={int(st.get('ref_w', 1366))}\n")
+                lines.append(f"RefHeight={int(st.get('ref_h', 768))}\n")
+                lines.append(f"WindowX={int(st['x'])}\n")
+                lines.append(f"WindowY={int(st['y'])}\n")
+            lines.append("\n")
 
     with open(GLOBAL_CONFIG, "w", encoding="utf-8") as f:
         f.writelines(lines)
@@ -3199,9 +3291,11 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         first_widget = next((s["key"] for s in self.skins if not s["is_suite"]), None)
         self.selected_key = first_widget or (self.skins[0]["key"] if self.skins else None)
         self.show_suites_in_widgets_tab = False
+        self.keep_other_monitors_active = False
         self.suite_monitor_idx = 0
+        self._detect_active_custom_suite()
         for s in self.skins:
-            if s["is_suite"] and self.skin_state[s["key"]]["active"]:
+            if self.skin_state[s["key"]]["active"]:
                 self.suite_monitor_idx = self.skin_state[s["key"]]["monitor"]
                 break
 
@@ -3286,21 +3380,41 @@ class ControlCenterWindow(Adw.ApplicationWindow):
 
         suite_mon_group = Adw.PreferencesGroup(
             title="Suite Display Settings",
-            description="Selecting a suite below automatically replaces the current desktop layout and fits it to the target monitor.",
+            description="Choose which monitor displays your suite (Monitor 0, Monitor 1, or Both Monitors), or keep each monitor's layout independent.",
         )
         suites_vbox.append(suite_mon_group)
 
         suite_mon_row = Adw.ActionRow(
             title="Target Monitor for Suite",
-            subtitle="Changing the monitor immediately moves and auto-scales the active suite",
+            subtitle="Changing the monitor immediately moves or mirrors and auto-scales the active suite",
         )
-        suite_mon_names = Gtk.StringList.new([m["name"] for m in self.monitors])
+        suite_mon_names = Gtk.StringList.new(self._get_monitor_dropdown_names())
         self.suite_mon_dropdown = Gtk.DropDown(model=suite_mon_names)
         self.suite_mon_dropdown.set_valign(Gtk.Align.CENTER)
-        self.suite_mon_dropdown.set_selected(min(self.suite_monitor_idx, len(self.monitors) - 1))
+        self.suite_mon_dropdown.set_selected(self._mon_val_to_dropdown_idx(self.suite_monitor_idx))
         self.suite_mon_dropdown.connect("notify::selected", self._on_suite_monitor_changed)
         suite_mon_row.add_suffix(self.suite_mon_dropdown)
+
+        if len(self.monitors) > 1:
+            both_btn = Gtk.Button(label="Mirror on Both Monitors")
+            both_btn.set_valign(Gtk.Align.CENTER)
+            both_btn.connect("clicked", self._on_mirror_both_monitors_clicked)
+            suite_mon_row.add_suffix(both_btn)
         suite_mon_group.add(suite_mon_row)
+
+        indep_mon_row = Adw.ActionRow(
+            title="Keep Other Monitor's Widgets Active (Multi-Monitor Pinning)",
+            subtitle="Enable to place different suites or widgets on 1st and 2nd monitor without clearing the other monitor",
+        )
+        self.keep_other_monitors_switch = Gtk.Switch()
+        self.keep_other_monitors_switch.set_valign(Gtk.Align.CENTER)
+        self.keep_other_monitors_switch.set_active(self.keep_other_monitors_active)
+        self.keep_other_monitors_switch.connect(
+            "notify::active",
+            lambda sw, _p: setattr(self, "keep_other_monitors_active", sw.get_active()),
+        )
+        indep_mon_row.add_suffix(self.keep_other_monitors_switch)
+        suite_mon_group.add(indep_mon_row)
 
         self.suites_list_group = Adw.PreferencesGroup(
             title="Built-in and Saved Custom Suites",
@@ -3720,9 +3834,9 @@ class ControlCenterWindow(Adw.ApplicationWindow):
 
         mon_row = Adw.ActionRow(
             title="Target Monitor",
-            subtitle="Display output where this widget is pinned",
+            subtitle="Display output where this widget is pinned (or choose All Monitors to show on both)",
         )
-        mon_names = Gtk.StringList.new([m["name"] for m in self.monitors])
+        mon_names = Gtk.StringList.new(self._get_monitor_dropdown_names())
         self.monitor_dropdown = Gtk.DropDown(model=mon_names)
         self.monitor_dropdown.set_valign(Gtk.Align.CENTER)
         self.monitor_dropdown.connect("notify::selected", self._on_monitor_changed)
@@ -4380,10 +4494,56 @@ class ControlCenterWindow(Adw.ApplicationWindow):
             self.suite_rows.append(row)
         return False
 
+    def _get_monitor_dropdown_names(self):
+        names = [m["name"] for m in self.monitors]
+        if len(self.monitors) > 1:
+            names.append("All Monitors (Both 1st and 2nd Monitor)")
+        return names
+
+    def _mon_val_to_dropdown_idx(self, mon_val):
+        if len(self.monitors) > 1 and mon_val == -1:
+            return len(self.monitors)
+        return max(0, min(len(self.monitors) - 1, int(mon_val)))
+
+    def _dropdown_idx_to_mon_val(self, idx):
+        if len(self.monitors) > 1 and idx >= len(self.monitors):
+            return -1
+        return max(0, min(len(self.monitors) - 1, int(idx)))
+
+    def _detect_active_custom_suite(self):
+        active_keys = {s["key"] for s in self.skins if self.skin_state.get(s["key"], {}).get("active", False)}
+        if not active_keys:
+            return
+        for cs in self.custom_suites:
+            cs_keys = set()
+            for w in cs.get("widgets", []):
+                wkey = w.get("key")
+                matched = next(
+                    (
+                        s["key"]
+                        for s in self.skins
+                        if s["key"] == wkey
+                        or s["abs_path"] == wkey
+                        or os.path.basename(s["abs_path"]) == os.path.basename(str(wkey))
+                    ),
+                    None,
+                )
+                if matched:
+                    cs_keys.add(matched)
+            if cs_keys and cs_keys == active_keys:
+                self.active_custom_suite_id = cs["id"]
+                break
+
+    def _on_mirror_both_monitors_clicked(self, _btn):
+        if len(self.monitors) > 1:
+            self.suite_mon_dropdown.set_selected(len(self.monitors))
+
     def _on_suite_monitor_changed(self, dropdown, _pspec):
         if self._updating_controls:
             return
-        self.suite_monitor_idx = int(dropdown.get_selected())
+        self.suite_monitor_idx = self._dropdown_idx_to_mon_val(int(dropdown.get_selected()))
+        target_mons = list(range(len(self.monitors))) if self.suite_monitor_idx == -1 else [self.suite_monitor_idx]
+
         if self.active_custom_suite_id:
             cs = next((c for c in self.custom_suites if c["id"] == self.active_custom_suite_id), None)
             if cs:
@@ -4392,43 +4552,88 @@ class ControlCenterWindow(Adw.ApplicationWindow):
 
         active_suite_key = None
         for s in self.skins:
-            if s["is_suite"]:
-                self.skin_state[s["key"]]["monitor"] = self.suite_monitor_idx
-                if self.skin_state[s["key"]]["active"]:
-                    active_suite_key = s["key"]
+            if s["is_suite"] and self.skin_state[s["key"]]["active"]:
+                active_suite_key = s["key"]
+                break
         if active_suite_key:
             self._activate_and_launch_suite(active_suite_key)
+            return
+
+        # Move/mirror any currently active Basic or Custom widgets to the selected monitor(s)
+        any_active = False
+        for s in self.skins:
+            st = self.skin_state[s["key"]]
+            if st["active"]:
+                any_active = True
+                st["monitor"] = self.suite_monitor_idx
+                if self.keep_other_monitors_active and self.suite_monitor_idx >= 0:
+                    for m in target_mons:
+                        if m not in st["monitors"]:
+                            st["monitors"].append(m)
+                            st["monitors"].sort()
+                    if len(st["monitors"]) > 1:
+                        st["monitor"] = -1
+                else:
+                    st["monitors"] = list(target_mons)
+        if any_active:
+            if self.selected_key:
+                self._select_widget(self.selected_key)
+            self._launch_active_items()
 
     def _on_activate_suite_clicked(self, _btn, suite_key):
         self._activate_and_launch_suite(suite_key)
 
     def _activate_and_launch_suite(self, suite_key):
         self.active_custom_suite_id = None
+        target_mons = list(range(len(self.monitors))) if self.suite_monitor_idx == -1 else [self.suite_monitor_idx]
+
         for s in self.skins:
-            is_target = s["key"] == suite_key
-            self.skin_state[s["key"]]["active"] = is_target
+            key = s["key"]
+            st = self.skin_state[key]
+            is_target = key == suite_key
             if is_target:
-                self.skin_state[s["key"]]["monitor"] = self.suite_monitor_idx
-                self.skin_state[s["key"]]["auto_fit"] = True
-                self.skin_state[s["key"]]["use_custom_pos"] = False
-                self.skin_state[s["key"]]["anchor_x"] = "center"
-                self.skin_state[s["key"]]["anchor_y"] = "center"
-                self.skin_state[s["key"]]["x"] = 0
-                self.skin_state[s["key"]]["y"] = 0
+                st["active"] = True
+                if self.keep_other_monitors_active and self.suite_monitor_idx >= 0:
+                    for m in target_mons:
+                        if m not in st["monitors"]:
+                            st["monitors"].append(m)
+                            st["monitors"].sort()
+                    st["monitor"] = -1 if len(st["monitors"]) > 1 else st["monitors"][0]
+                else:
+                    st["monitor"] = self.suite_monitor_idx
+                    st["monitors"] = list(target_mons)
+                st["auto_fit"] = True
+                st["use_custom_pos"] = False
+                st["anchor_x"] = "center"
+                st["anchor_y"] = "center"
+                st["x"] = 0
+                st["y"] = 0
+            else:
+                if self.keep_other_monitors_active and self.suite_monitor_idx >= 0 and st["active"]:
+                    cur_mons = get_active_monitors_for_skin(st, len(self.monitors))
+                    rem_mons = [m for m in cur_mons if m not in target_mons]
+                    st["monitors"] = rem_mons
+                    st["active"] = len(rem_mons) > 0
+                    if st["active"]:
+                        st["monitor"] = -1 if len(rem_mons) > 1 else rem_mons[0]
+                else:
+                    st["active"] = False
+                    st["monitors"] = []
 
         self._sync_active_states_in_place()
         self._select_widget(suite_key)
         self._launch_active_items()
 
     def _on_activate_custom_suite_clicked(self, _btn, cs):
-        self._activate_custom_suite(cs)
+        self._activate_custom_suite(cs, override_monitor=self.suite_monitor_idx)
 
     def _activate_custom_suite(self, cs, override_monitor=None):
         self.active_custom_suite_id = cs["id"]
-        for s in self.skins:
-            self.skin_state[s["key"]]["active"] = False
+        target_mon = override_monitor if override_monitor is not None else self.suite_monitor_idx
+        target_mons = list(range(len(self.monitors))) if target_mon == -1 else [target_mon]
 
-        first_key = None
+        matched_keys = set()
+        resolved_widgets = []
         for w in cs["widgets"]:
             wkey = w.get("key")
             matched = next(
@@ -4441,19 +4646,44 @@ class ControlCenterWindow(Adw.ApplicationWindow):
                 ),
                 None,
             )
-            if not matched:
+            if matched:
+                matched_keys.add(matched)
+                resolved_widgets.append((matched, w))
+
+        for s in self.skins:
+            key = s["key"]
+            if key in matched_keys:
                 continue
+            st = self.skin_state[key]
+            if self.keep_other_monitors_active and target_mon >= 0 and st["active"]:
+                cur_mons = get_active_monitors_for_skin(st, len(self.monitors))
+                rem_mons = [m for m in cur_mons if m not in target_mons]
+                st["monitors"] = rem_mons
+                st["active"] = len(rem_mons) > 0
+                if st["active"]:
+                    st["monitor"] = -1 if len(rem_mons) > 1 else rem_mons[0]
+            else:
+                st["active"] = False
+                st["monitors"] = []
+
+        first_key = None
+        for matched, w in resolved_widgets:
             if first_key is None:
                 first_key = matched
             st = self.skin_state[matched]
+            prev_mons = get_active_monitors_for_skin(st, len(self.monitors)) if (self.keep_other_monitors_active and st["active"]) else []
             st["active"] = True
-            st["monitor"] = override_monitor if override_monitor is not None else w.get("monitor", self.suite_monitor_idx)
+            combined_mons = sorted(list(dict.fromkeys(prev_mons + target_mons)))
+            st["monitors"] = combined_mons
+            st["monitor"] = -1 if len(combined_mons) > 1 else (combined_mons[0] if combined_mons else 0)
             st["anchor_x"] = w.get("anchor_x", st["anchor_x"])
             st["anchor_y"] = w.get("anchor_y", st["anchor_y"])
             st["use_custom_pos"] = w.get("use_custom_pos", False)
             st["x"] = w.get("x", 0)
             st["y"] = w.get("y", 0)
-            st["auto_fit"] = w.get("auto_fit", False)
+            st["ref_w"] = w.get("ref_width", cs.get("ref_width", 1366))
+            st["ref_h"] = w.get("ref_height", cs.get("ref_height", 768))
+            st["auto_fit"] = True
             st["scale"] = w.get("scale", 1.0)
 
         self._sync_active_states_in_place()
@@ -4639,7 +4869,9 @@ class ControlCenterWindow(Adw.ApplicationWindow):
 
     def _get_effective_scale(self, skin_info, st):
         if st.get("auto_fit", False):
-            mon = self.monitors[min(st["monitor"], len(self.monitors) - 1)]
+            m_val = st.get("monitor", 0)
+            m_idx = 0 if m_val < 0 else min(m_val, len(self.monitors) - 1)
+            mon = self.monitors[m_idx]
             return compute_autofit_scale(skin_info, mon["width"], mon["height"])
         return st["scale"]
 
@@ -4658,8 +4890,7 @@ class ControlCenterWindow(Adw.ApplicationWindow):
             st = self.skin_state[key]
             if skin_info:
                 self.detail_title.set_label(skin_info["title"])
-            mon_idx = min(st["monitor"], len(self.monitors) - 1)
-            self.monitor_dropdown.set_selected(mon_idx)
+            self.monitor_dropdown.set_selected(self._mon_val_to_dropdown_idx(st["monitor"]))
             self.autofit_switch.set_active(st.get("auto_fit", False))
             eff_scale = self._get_effective_scale(skin_info, st) if skin_info else st["scale"]
             self.scale_adj.set_value(eff_scale)
@@ -4679,7 +4910,8 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         self.preview_area.queue_draw()
 
     def _compute_anchored_xy(self, skin_info, st):
-        mon_idx = min(st["monitor"], len(self.monitors) - 1)
+        m_val = st.get("monitor", 0)
+        mon_idx = 0 if m_val < 0 else min(m_val, len(self.monitors) - 1)
         mon = self.monitors[mon_idx]
         mon_w, mon_h = mon["width"], mon["height"]
         eff_scale = self._get_effective_scale(skin_info, st)
@@ -4711,17 +4943,25 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         if self._updating_controls:
             return
         is_on = sw.get_active()
-        self.skin_state[key]["active"] = is_on
+        st = self.skin_state[key]
+        st["active"] = is_on
+        if is_on and not st.get("monitors"):
+            st["monitors"] = list(range(len(self.monitors))) if st["monitor"] == -1 else [max(0, st["monitor"])]
         self.active_custom_suite_id = None
         self._sync_active_states_in_place()
         self.preview_area.queue_draw()
+        self._launch_active_items()
 
     def _on_monitor_changed(self, dropdown, _pspec):
         if self._updating_controls or not self.selected_key:
             return
-        mon_idx = int(dropdown.get_selected())
-        self.skin_state[self.selected_key]["monitor"] = mon_idx
+        mon_val = self._dropdown_idx_to_mon_val(int(dropdown.get_selected()))
+        st = self.skin_state[self.selected_key]
+        st["monitor"] = mon_val
+        st["monitors"] = list(range(len(self.monitors))) if mon_val == -1 else [mon_val]
         self._select_widget(self.selected_key)
+        if st["active"]:
+            self._launch_active_items()
 
     def _on_autofit_toggled(self, sw, _pspec):
         if self._updating_controls or not self.selected_key:
@@ -4729,6 +4969,8 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         st = self.skin_state[self.selected_key]
         st["auto_fit"] = sw.get_active()
         self._select_widget(self.selected_key)
+        if st["active"]:
+            self._launch_active_items()
 
     def _on_scale_changed(self, spin):
         if self._updating_controls or not self.selected_key:
@@ -4747,6 +4989,8 @@ class ControlCenterWindow(Adw.ApplicationWindow):
                 self.y_adj.set_value(ay)
         self._updating_controls = False
         self.preview_area.queue_draw()
+        if st["active"]:
+            self._launch_active_items()
 
     def _on_custom_pos_toggled(self, sw, _pspec):
         if self._updating_controls or not self.selected_key:
@@ -5097,7 +5341,7 @@ class ControlCenterWindow(Adw.ApplicationWindow):
 
     def _launch_active_items(self):
         active_skins = [s for s in self.skins if self.skin_state[s["key"]]["active"]]
-        save_global_config(self.skins, self.skin_state)
+        save_global_config(self.skins, self.skin_state, len(self.monitors))
         stop_engine()
 
         if not active_skins:
@@ -5107,7 +5351,13 @@ class ControlCenterWindow(Adw.ApplicationWindow):
 
         cmd = [ENGINE_BIN]
         for s in active_skins:
-            cmd.append(s["key"])
+            st = self.skin_state[s["key"]]
+            act_mons = get_active_monitors_for_skin(st, len(self.monitors))
+            for m_idx in act_mons:
+                if len(act_mons) > 1 or m_idx > 0:
+                    cmd.append(f"{s['key']}@{m_idx}")
+                else:
+                    cmd.append(s["key"])
 
         subprocess.Popen(
             cmd,

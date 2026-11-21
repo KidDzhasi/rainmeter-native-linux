@@ -254,6 +254,11 @@ bool LayerShellWindow::connect() {
     }
     // Second roundtrip to ensure we receive the bound output geometry events
     wl_display_roundtrip(display_);
+    std::sort(outputs_.begin(), outputs_.end(),
+              [](const OutputInfo &a, const OutputInfo &b) {
+                if (a.x != b.x) return a.x < b.x;
+                return a.y < b.y;
+              });
   }
 
   // If the compositor supports wlr-layer-shell (e.g. wlroots, KDE, or GNOME
@@ -278,29 +283,31 @@ bool LayerShellWindow::connect() {
       int nmon = 0;
       XRRMonitorInfo *mons = XRRGetMonitors(xDisplay_, root, True, &nmon);
       if (mons && nmon > 0) {
-        for (int i = 0; i < nmon; ++i) {
-          if (i < static_cast<int>(outputs_.size())) {
-            outputs_[i].x = mons[i].x;
-            outputs_[i].y = mons[i].y;
-            outputs_[i].logicalWidth = mons[i].width;
-            outputs_[i].logicalHeight = mons[i].height;
-            if (outputs_[i].width > 0 && outputs_[i].logicalWidth > 0) {
-              outputs_[i].fractionalScale =
-                  static_cast<double>(outputs_[i].width) /
-                  static_cast<double>(outputs_[i].logicalWidth);
-            }
-          } else {
-            OutputInfo info;
-            info.x = mons[i].x;
-            info.y = mons[i].y;
-            info.width = mons[i].width;
-            info.height = mons[i].height;
-            info.logicalWidth = mons[i].width;
-            info.logicalHeight = mons[i].height;
-            outputs_.push_back(info);
+        for (auto &oldInfo : outputs_) {
+          if (oldInfo.xdgOutput != nullptr) {
+            zxdg_output_v1_destroy(oldInfo.xdgOutput);
+            oldInfo.xdgOutput = nullptr;
           }
         }
+        outputs_.clear();
+        for (int i = 0; i < nmon; ++i) {
+          OutputInfo info;
+          info.x = mons[i].x;
+          info.y = mons[i].y;
+          info.width = mons[i].width;
+          info.height = mons[i].height;
+          info.logicalWidth = mons[i].width;
+          info.logicalHeight = mons[i].height;
+          info.scale = 1;
+          info.fractionalScale = 1.0;
+          outputs_.push_back(info);
+        }
         XRRFreeMonitors(mons);
+        std::sort(outputs_.begin(), outputs_.end(),
+                  [](const OutputInfo &a, const OutputInfo &b) {
+                    if (a.x != b.x) return a.x < b.x;
+                    return a.y < b.y;
+                  });
       } else if (outputs_.empty()) {
         OutputInfo info;
         info.output = nullptr;
@@ -1087,11 +1094,23 @@ bool LayerShellWindow::dispatchPending() {
         handlePointerButton(wlBtn, 0U);
         break;
       }
+      case MapNotify:
+        if (ev.xmap.window == xWindow_) {
+          XMoveResizeWindow(xDisplay_, xWindow_, xWindowX_, xWindowY_,
+                            static_cast<unsigned int>(width_),
+                            static_cast<unsigned int>(height_));
+          XLowerWindow(xDisplay_, xWindow_);
+          XFlush(xDisplay_);
+        }
+        break;
       case ConfigureNotify:
-        // Keep the widget strictly pinned to its configured desktop position
+        // Keep the widget strictly pinned to its configured desktop position & size
         if (ev.xconfigure.window == xWindow_ &&
-            (ev.xconfigure.x != xWindowX_ || ev.xconfigure.y != xWindowY_)) {
-          XMoveWindow(xDisplay_, xWindow_, xWindowX_, xWindowY_);
+            (ev.xconfigure.x != xWindowX_ || ev.xconfigure.y != xWindowY_ ||
+             ev.xconfigure.width != width_ || ev.xconfigure.height != height_)) {
+          XMoveResizeWindow(xDisplay_, xWindow_, xWindowX_, xWindowY_,
+                            static_cast<unsigned int>(width_),
+                            static_cast<unsigned int>(height_));
           XLowerWindow(xDisplay_, xWindow_);
           XFlush(xDisplay_);
         }

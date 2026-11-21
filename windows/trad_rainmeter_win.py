@@ -1222,18 +1222,22 @@ def load_global_config(skins):
         state[s["key"]] = {
             "active": False,
             "monitor": 0,
+            "monitors": [],
             "anchor_x": s["default_anchor_x"],
             "anchor_y": s["default_anchor_y"],
             "use_custom_pos": has_def_xy,
             "x": s["default_x"] if has_def_xy else 0,
             "y": s["default_y"] if has_def_xy else 0,
-            "auto_fit": s["is_suite"],
+            "ref_w": 1366,
+            "ref_h": 768,
+            "auto_fit": True,
             "scale": 1.0,
         }
     if not os.path.isfile(GLOBAL_CONFIG):
         for s in skins:
             if "TradSunset" in s["key"]:
                 state[s["key"]]["active"] = True
+                state[s["key"]]["monitors"] = [0]
                 break
         return state
 
@@ -1244,6 +1248,13 @@ def load_global_config(skins):
             cp.read_file(f)
         for sec in cp.sections():
             norm_sec = sec.replace("\\", "/")
+            tag_mon = None
+            if "@" in norm_sec:
+                r_at = norm_sec.rfind("@")
+                suffix = norm_sec[r_at + 1 :]
+                if suffix.isdigit():
+                    norm_sec = norm_sec[:r_at]
+                    tag_mon = int(suffix)
             matched_key = next(
                 (s["key"] for s in skins if norm_sec == s["key"] or s["abs_path"].replace("\\", "/").endswith(norm_sec)),
                 None,
@@ -1252,18 +1263,49 @@ def load_global_config(skins):
                 continue
             st = state[matched_key]
             sec_map = {k.lower(): v.strip() for k, v in cp.items(sec)}
-            st["active"] = sec_map.get("active", "0") not in ("0", "false", "")
+            is_act = sec_map.get("active", "0") not in ("0", "false", "")
+            mon_val = tag_mon if tag_mon is not None else 0
             if "monitor" in sec_map:
                 try:
-                    st["monitor"] = max(0, int(float(sec_map["monitor"])))
+                    mon_val = int(float(sec_map["monitor"]))
                 except ValueError:
                     pass
+            if is_act:
+                st["active"] = True
+                if mon_val >= 0 and mon_val not in st["monitors"]:
+                    st["monitors"].append(mon_val)
+                    st["monitors"].sort()
+                if len(st["monitors"]) > 1:
+                    st["monitor"] = -1
+                elif st["monitors"]:
+                    st["monitor"] = st["monitors"][0]
+                else:
+                    st["monitor"] = max(0, mon_val)
+            elif not st["active"]:
+                st["monitor"] = max(0, mon_val)
             if "anchorx" in sec_map and sec_map["anchorx"].lower() in ("left", "center", "right"):
                 st["anchor_x"] = sec_map["anchorx"].lower()
             if "anchory" in sec_map and sec_map["anchory"].lower() in ("top", "center", "bottom"):
                 st["anchor_y"] = sec_map["anchory"].lower()
+            if "scale" in sec_map:
+                try:
+                    st["scale"] = max(0.25, min(3.0, float(sec_map["scale"])))
+                except ValueError:
+                    pass
             if "autofit" in sec_map:
                 st["auto_fit"] = sec_map["autofit"].lower() in ("1", "true", "yes")
+            elif "scale" in sec_map:
+                st["auto_fit"] = False
+            if "refwidth" in sec_map:
+                try:
+                    st["ref_w"] = max(320, int(float(sec_map["refwidth"])))
+                except ValueError:
+                    pass
+            if "refheight" in sec_map:
+                try:
+                    st["ref_h"] = max(240, int(float(sec_map["refheight"])))
+                except ValueError:
+                    pass
             if "windowx" in sec_map or "windowy" in sec_map:
                 try:
                     st["x"] = int(float(sec_map.get("windowx", "0")))
@@ -1271,18 +1313,24 @@ def load_global_config(skins):
                     st["use_custom_pos"] = True
                 except ValueError:
                     pass
-            if "scale" in sec_map:
-                try:
-                    st["scale"] = max(0.25, min(3.0, float(sec_map["scale"])))
-                    st["auto_fit"] = False
-                except ValueError:
-                    pass
     except Exception:
         pass
     return state
 
 
-def save_global_config(skins, state):
+def get_active_monitors_for_skin(st, num_monitors=1):
+    if not st.get("active", False):
+        return []
+    if st.get("monitor", 0) == -1:
+        return list(range(max(1, num_monitors)))
+    mons = [m for m in st.get("monitors", []) if 0 <= m < max(1, num_monitors)]
+    if mons:
+        return sorted(list(dict.fromkeys(mons)))
+    m_single = max(0, min(max(1, num_monitors) - 1, int(st.get("monitor", 0))))
+    return [m_single]
+
+
+def save_global_config(skins, state, num_monitors=1):
     os.makedirs(CONFIG_DIR, exist_ok=True)
     lines = ["; Rainmeter Native Global Configuration\n"]
     for s in skins:
@@ -1290,18 +1338,39 @@ def save_global_config(skins, state):
         st = state.get(key)
         if not st:
             continue
-        lines.append(f"[{key}]\n")
-        lines.append(f"Active={1 if st['active'] else 0}\n")
-        lines.append(f"Monitor={st['monitor']}\n")
-        lines.append(f"AnchorX={st['anchor_x'].capitalize()}\n")
-        lines.append(f"AnchorY={st['anchor_y'].capitalize()}\n")
-        lines.append(f"AutoFit={1 if st['auto_fit'] else 0}\n")
-        if not st["auto_fit"]:
-            lines.append(f"Scale={st['scale']:.2f}\n")
-        if st["use_custom_pos"]:
-            lines.append(f"WindowX={int(st['x'])}\n")
-            lines.append(f"WindowY={int(st['y'])}\n")
-        lines.append("\n")
+        act_mons = get_active_monitors_for_skin(st, num_monitors)
+        if not act_mons:
+            lines.append(f"[{key}]\n")
+            lines.append("Active=0\n")
+            lines.append(f"Monitor={max(0, st.get('monitor', 0))}\n")
+            lines.append(f"AnchorX={st['anchor_x'].capitalize()}\n")
+            lines.append(f"AnchorY={st['anchor_y'].capitalize()}\n")
+            lines.append(f"AutoFit={1 if st['auto_fit'] else 0}\n")
+            if not st["auto_fit"]:
+                lines.append(f"Scale={st['scale']:.2f}\n")
+            if st["use_custom_pos"]:
+                lines.append(f"RefWidth={int(st.get('ref_w', 1366))}\n")
+                lines.append(f"RefHeight={int(st.get('ref_h', 768))}\n")
+                lines.append(f"WindowX={int(st['x'])}\n")
+                lines.append(f"WindowY={int(st['y'])}\n")
+            lines.append("\n")
+            continue
+        for m_idx in act_mons:
+            sec_name = f"{key}@{m_idx}" if len(act_mons) > 1 or m_idx > 0 else key
+            lines.append(f"[{sec_name}]\n")
+            lines.append("Active=1\n")
+            lines.append(f"Monitor={m_idx}\n")
+            lines.append(f"AnchorX={st['anchor_x'].capitalize()}\n")
+            lines.append(f"AnchorY={st['anchor_y'].capitalize()}\n")
+            lines.append(f"AutoFit={1 if st['auto_fit'] else 0}\n")
+            if not st["auto_fit"]:
+                lines.append(f"Scale={st['scale']:.2f}\n")
+            if st["use_custom_pos"]:
+                lines.append(f"RefWidth={int(st.get('ref_w', 1366))}\n")
+                lines.append(f"RefHeight={int(st.get('ref_h', 768))}\n")
+                lines.append(f"WindowX={int(st['x'])}\n")
+                lines.append(f"WindowY={int(st['y'])}\n")
+            lines.append("\n")
     with open(GLOBAL_CONFIG, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
@@ -1310,7 +1379,7 @@ def save_global_config(skins, state):
 # Pinned Desktop Widget Renderer Window (Win32 HWND_BOTTOM Desktop Overlay)
 # ---------------------------------------------------------------------------
 class DesktopWidgetWindow:
-    def __init__(self, master, skin_info, skin_state, monitors, telemetry, on_open_weather):
+    def __init__(self, master, skin_info, skin_state, monitors, telemetry, on_open_weather, mon_idx=None):
         self.master = master
         self.skin_info = skin_info
         self.state = skin_state
@@ -1320,7 +1389,9 @@ class DesktopWidgetWindow:
         self.win = tk.Toplevel(master)
         self.win.overrideredirect(True)
 
-        mon_idx = min(skin_state.get("monitor", 0), len(monitors) - 1)
+        if mon_idx is None:
+            mon_idx = max(0, skin_state.get("monitor", 0))
+        mon_idx = max(0, min(mon_idx, len(monitors) - 1))
         mon = monitors[mon_idx]
         mx, my, mw, mh = mon["x"], mon["y"], mon["width"], mon["height"]
 
@@ -1332,8 +1403,16 @@ class DesktopWidgetWindow:
             h = min(mh, max(320, h))
 
         if skin_state.get("use_custom_pos"):
-            x = mx + max(0, min(mw - w, int(skin_state.get("x", 0))))
-            y = my + max(0, min(mh - h, int(skin_state.get("y", 0))))
+            raw_x = float(skin_state.get("x", 0))
+            raw_y = float(skin_state.get("y", 0))
+            if skin_state.get("auto_fit", False):
+                ref_w = max(320, int(skin_state.get("ref_w", 1366)))
+                ref_h = max(240, int(skin_state.get("ref_h", 768)))
+                if mw != ref_w or mh != ref_h:
+                    raw_x = raw_x * (mw / float(ref_w))
+                    raw_y = raw_y * (mh / float(ref_h))
+            x = mx + max(0, min(mw - w, int(round(raw_x))))
+            y = my + max(0, min(mh - h, int(round(raw_y))))
         else:
             ax = skin_state.get("anchor_x", "center")
             ay = skin_state.get("anchor_y", "center")
@@ -1789,9 +1868,11 @@ class TradDesktopWindowsApp:
         self.active_desktop_windows = []
         self.engine_running = True
         self.selected_key = next((s["key"] for s in self.skins if not s["is_suite"]), self.skins[0]["key"] if self.skins else None)
+        self.keep_other_monitors_active = False
         self.suite_monitor_idx = 0
+        self._detect_active_custom_suite()
         for s in self.skins:
-            if s["is_suite"] and self.skin_state[s["key"]]["active"]:
+            if self.skin_state[s["key"]]["active"]:
                 self.suite_monitor_idx = self.skin_state[s["key"]]["monitor"]
                 break
 
@@ -1970,6 +2051,42 @@ class TradDesktopWindowsApp:
             tk.Frame(card, height=1, bg=UI_DIVIDER).pack(fill="x")
         return row, right, lbl_title, lbl_sub
 
+    def _get_monitor_dropdown_names(self):
+        names = [m["name"] for m in self.monitors]
+        if len(self.monitors) > 1:
+            names.append("All Monitors (Both 1st and 2nd Monitor)")
+        return names
+
+    def _dropdown_name_to_mon_val(self, name):
+        names = [m["name"] for m in self.monitors]
+        if name in names:
+            return names.index(name)
+        if len(self.monitors) > 1:
+            return -1
+        return 0
+
+    def _mon_val_to_dropdown_name(self, mon_val):
+        names = self._get_monitor_dropdown_names()
+        if mon_val == -1 and len(self.monitors) > 1:
+            return names[-1]
+        idx = max(0, min(len(self.monitors) - 1, int(mon_val)))
+        return names[idx]
+
+    def _detect_active_custom_suite(self):
+        active_non_suite = {s["key"] for s in self.skins if not s["is_suite"] and self.skin_state[s["key"]]["active"]}
+        if not active_non_suite:
+            return
+        for cs in self.custom_suites:
+            cs_keys = set()
+            for w in cs["widgets"]:
+                wkey = w.get("key", "")
+                matched = next((s["key"] for s in self.skins if s["key"] == wkey or s["key"].endswith(os.path.basename(wkey))), None)
+                if matched:
+                    cs_keys.add(matched)
+            if cs_keys and cs_keys == active_non_suite:
+                self.active_custom_suite_id = cs["id"]
+                return
+
     # =========================================================================
     # TAB 1: SUITES (Clamped Centered Cards Matching Linux)
     # =========================================================================
@@ -1988,19 +2105,33 @@ class TradDesktopWindowsApp:
         mon_card = self._make_group(
             clamp,
             "Suite Display Settings",
-            "Selecting a suite below automatically replaces the current desktop layout and fits it to the target monitor.",
+            "Choose which monitor displays your suite (Monitor 0, Monitor 1, or Both Monitors), or keep each monitor's layout independent.",
         )
         _r, right, _lt, _ls = self._make_row(
             mon_card,
             "Target Monitor for Suite",
-            "Changing the monitor immediately moves and auto-scales the active suite",
+            "Changing the monitor immediately moves or mirrors and auto-scales the active suite",
+            is_last=False,
+        )
+        mon_names = self._get_monitor_dropdown_names()
+        self.suite_mon_var = tk.StringVar(value=self._mon_val_to_dropdown_name(self.suite_monitor_idx))
+        mon_cb = ttk.Combobox(right, textvariable=self.suite_mon_var, values=mon_names, state="readonly", width=32)
+        mon_cb.pack(side="left", padx=(0, 6))
+        mon_cb.bind("<<ComboboxSelected>>", self._on_suite_monitor_changed)
+        if len(self.monitors) > 1:
+            tk.Button(
+                right, text="Mirror on Both Monitors", bg=UI_CARD_ALT, fg=UI_TEXT,
+                font=("Segoe UI", 8, "bold"), relief="flat", padx=10, pady=4,
+                cursor="hand2", command=self._on_mirror_both_monitors_clicked
+            ).pack(side="left")
+
+        _r2, right2, _lt2, _ls2 = self._make_row(
+            mon_card,
+            "Keep Other Monitor's Widgets Active (Multi-Monitor Pinning)",
+            "Enable to place different suites or widgets on 1st and 2nd monitor without clearing the other monitor",
             is_last=True,
         )
-        mon_names = [m["name"] for m in self.monitors]
-        self.suite_mon_var = tk.StringVar(value=mon_names[min(self.suite_monitor_idx, len(mon_names) - 1)])
-        mon_cb = ttk.Combobox(right, textvariable=self.suite_mon_var, values=mon_names, state="readonly", width=30)
-        mon_cb.pack()
-        mon_cb.bind("<<ComboboxSelected>>", self._on_suite_monitor_changed)
+        PillSwitch(right2, initial=self.keep_other_monitors_active, command=lambda val: setattr(self, "keep_other_monitors_active", bool(val))).pack()
 
         # Group 2: Built-in and Saved Custom Suites
         suites_card = self._make_group(
@@ -2086,55 +2217,116 @@ class TradDesktopWindowsApp:
                 command=lambda item=cs: self._delete_custom_suite(item)
             ).pack(side="left")
 
+    def _on_mirror_both_monitors_clicked(self):
+        if len(self.monitors) > 1:
+            names = self._get_monitor_dropdown_names()
+            self.suite_mon_var.set(names[-1])
+            self._on_suite_monitor_changed()
+
     def _on_suite_monitor_changed(self, _e=None):
-        names = [m["name"] for m in self.monitors]
-        if self.suite_mon_var.get() in names:
-            self.suite_monitor_idx = names.index(self.suite_mon_var.get())
+        self.suite_monitor_idx = self._dropdown_name_to_mon_val(self.suite_mon_var.get())
+        if self.active_custom_suite_id is not None:
+            cs = next((c for c in self.custom_suites if c["id"] == self.active_custom_suite_id), None)
+            if cs:
+                self._activate_custom_suite(cs, override_monitor=self.suite_monitor_idx)
+                return
+        target_mons = list(range(len(self.monitors))) if self.suite_monitor_idx == -1 else [self.suite_monitor_idx]
         for s in self.skins:
-            if s["is_suite"]:
+            if self.skin_state[s["key"]]["active"]:
                 self.skin_state[s["key"]]["monitor"] = self.suite_monitor_idx
-        save_global_config(self.skins, self.skin_state)
+                self.skin_state[s["key"]]["monitors"] = list(target_mons)
+                self.skin_state[s["key"]]["auto_fit"] = True
+        save_global_config(self.skins, self.skin_state, len(self.monitors))
         self.relaunch_desktop_widgets()
 
     def _activate_suite(self, suite_key):
         self.active_custom_suite_id = None
+        target_mons = list(range(len(self.monitors))) if self.suite_monitor_idx == -1 else [self.suite_monitor_idx]
         for s in self.skins:
+            st = self.skin_state[s["key"]]
             is_t = s["key"] == suite_key
-            self.skin_state[s["key"]]["active"] = is_t
             if is_t:
-                self.skin_state[s["key"]]["monitor"] = self.suite_monitor_idx
-                self.skin_state[s["key"]]["auto_fit"] = True
-                self.skin_state[s["key"]]["use_custom_pos"] = False
-                self.skin_state[s["key"]]["anchor_x"] = "center"
-                self.skin_state[s["key"]]["anchor_y"] = "center"
-                self.skin_state[s["key"]]["x"] = 0
-                self.skin_state[s["key"]]["y"] = 0
-        save_global_config(self.skins, self.skin_state)
+                st["active"] = True
+                if self.keep_other_monitors_active and st.get("monitors"):
+                    merged = sorted(list(set(st["monitors"] + target_mons)))
+                    st["monitors"] = merged
+                    st["monitor"] = -1 if len(merged) > 1 else merged[0]
+                else:
+                    st["monitors"] = list(target_mons)
+                    st["monitor"] = self.suite_monitor_idx
+                st["auto_fit"] = True
+                st["use_custom_pos"] = False
+                st["anchor_x"] = "center"
+                st["anchor_y"] = "center"
+                st["x"] = 0
+                st["y"] = 0
+            elif self.keep_other_monitors_active and st.get("active"):
+                cur_mons = get_active_monitors_for_skin(st, len(self.monitors))
+                rem_mons = [m for m in cur_mons if m not in target_mons]
+                st["monitors"] = rem_mons
+                if not rem_mons:
+                    st["active"] = False
+                else:
+                    st["monitor"] = -1 if len(rem_mons) > 1 else rem_mons[0]
+            else:
+                st["active"] = False
+                st["monitors"] = []
+        save_global_config(self.skins, self.skin_state, len(self.monitors))
         self._build_suites_tab()
         self._build_basic_tab()
         self._build_widgets_tab()
         self.relaunch_desktop_widgets()
         self._show_toast("Suite activated on desktop")
 
-    def _activate_custom_suite(self, cs):
+    def _activate_custom_suite(self, cs, override_monitor=None):
         self.active_custom_suite_id = cs["id"]
+        target_mon_val = override_monitor if override_monitor is not None else self.suite_monitor_idx
+        target_mons = list(range(len(self.monitors))) if target_mon_val == -1 else [target_mon_val]
+        suite_matched_keys = set()
+        for w in cs["widgets"]:
+            wkey = w.get("key", "")
+            matched = next((s["key"] for s in self.skins if s["key"] == wkey or s["key"].endswith(os.path.basename(wkey))), None)
+            if matched:
+                suite_matched_keys.add(matched)
         for s in self.skins:
-            self.skin_state[s["key"]]["active"] = False
+            if s["key"] in suite_matched_keys:
+                continue
+            st = self.skin_state[s["key"]]
+            if self.keep_other_monitors_active and st.get("active"):
+                cur_mons = get_active_monitors_for_skin(st, len(self.monitors))
+                rem_mons = [m for m in cur_mons if m not in target_mons]
+                st["monitors"] = rem_mons
+                if not rem_mons:
+                    st["active"] = False
+                else:
+                    st["monitor"] = -1 if len(rem_mons) > 1 else rem_mons[0]
+            else:
+                st["active"] = False
+                st["monitors"] = []
         for w in cs["widgets"]:
             wkey = w.get("key", "")
             matched = next((s["key"] for s in self.skins if s["key"] == wkey or s["key"].endswith(os.path.basename(wkey))), None)
             if matched:
                 st = self.skin_state[matched]
+                if self.keep_other_monitors_active and st.get("active"):
+                    cur_mons = get_active_monitors_for_skin(st, len(self.monitors))
+                    merged = sorted(list(set(cur_mons + target_mons)))
+                    st["monitors"] = merged
+                    st["monitor"] = -1 if len(merged) > 1 else merged[0]
+                else:
+                    st["monitors"] = list(target_mons)
+                    st["monitor"] = target_mon_val
                 st["active"] = True
-                st["monitor"] = w.get("monitor", self.suite_monitor_idx)
                 st["anchor_x"] = w.get("anchor_x", st["anchor_x"])
                 st["anchor_y"] = w.get("anchor_y", st["anchor_y"])
                 st["use_custom_pos"] = w.get("use_custom_pos", False)
                 st["x"] = w.get("x", 0)
                 st["y"] = w.get("y", 0)
-                st["auto_fit"] = w.get("auto_fit", False)
+                st["ref_w"] = int(w.get("ref_width", 1366))
+                st["ref_h"] = int(w.get("ref_height", 768))
+                st["auto_fit"] = w.get("auto_fit", True)
                 st["scale"] = w.get("scale", 1.0)
-        save_global_config(self.skins, self.skin_state)
+        save_global_config(self.skins, self.skin_state, len(self.monitors))
         self._build_suites_tab()
         self._build_basic_tab()
         self._build_widgets_tab()
@@ -2771,11 +2963,10 @@ class TradDesktopWindowsApp:
             "Monitor and Screen Scaling",
             "Configure target monitor, automatic resolution fitting, or custom scale factor.",
         )
-        _r, right, _lt, _ls = self._make_row(scale_card, "Target Monitor", "Display output where this widget is pinned")
-        mon_names = [m["name"] for m in self.monitors]
-        cur_mon = min(sel_st.get("monitor", 0), len(mon_names) - 1)
-        self.pos_mon_var = tk.StringVar(value=mon_names[cur_mon])
-        pm_cb = ttk.Combobox(right, textvariable=self.pos_mon_var, values=mon_names, state="readonly", width=28)
+        _r, right, _lt, _ls = self._make_row(scale_card, "Target Monitor", "Display output where this widget is pinned (or choose All Monitors to show on both)")
+        mon_names = self._get_monitor_dropdown_names()
+        self.pos_mon_var = tk.StringVar(value=self._mon_val_to_dropdown_name(sel_st.get("monitor", 0)))
+        pm_cb = ttk.Combobox(right, textvariable=self.pos_mon_var, values=mon_names, state="readonly", width=32)
         pm_cb.pack()
         pm_cb.bind("<<ComboboxSelected>>", self._on_pos_mon_changed)
 
@@ -2831,16 +3022,22 @@ class TradDesktopWindowsApp:
     def _on_pos_mon_changed(self, _e=None):
         if not self.selected_key:
             return
-        names = [m["name"] for m in self.monitors]
-        if self.pos_mon_var.get() in names:
-            self.skin_state[self.selected_key]["monitor"] = names.index(self.pos_mon_var.get())
-            self._draw_monitor_preview()
+        mon_val = self._dropdown_name_to_mon_val(self.pos_mon_var.get())
+        self.skin_state[self.selected_key]["monitor"] = mon_val
+        self.skin_state[self.selected_key]["monitors"] = list(range(len(self.monitors))) if mon_val == -1 else [mon_val]
+        self._draw_monitor_preview()
+        if self.skin_state[self.selected_key]["active"]:
+            save_global_config(self.skins, self.skin_state, len(self.monitors))
+            self.relaunch_desktop_widgets()
 
     def _on_autofit_toggled(self, val):
         if not self.selected_key:
             return
         self.skin_state[self.selected_key]["auto_fit"] = bool(val)
         self._draw_monitor_preview()
+        if self.skin_state[self.selected_key]["active"]:
+            save_global_config(self.skins, self.skin_state, len(self.monitors))
+            self.relaunch_desktop_widgets()
 
     def _on_manual_scale_changed(self):
         if not self.selected_key:
@@ -2849,6 +3046,9 @@ class TradDesktopWindowsApp:
             self.skin_state[self.selected_key]["auto_fit"] = False
             self.skin_state[self.selected_key]["scale"] = max(0.25, min(3.0, float(self.scale_var.get())))
             self._draw_monitor_preview()
+            if self.skin_state[self.selected_key]["active"]:
+                save_global_config(self.skins, self.skin_state, len(self.monitors))
+                self.relaunch_desktop_widgets()
         except Exception:
             pass
 
@@ -2880,13 +3080,14 @@ class TradDesktopWindowsApp:
         st["use_custom_pos"] = False
         st["anchor_x"] = ax
         st["anchor_y"] = ay
-        save_global_config(self.skins, self.skin_state)
+        save_global_config(self.skins, self.skin_state, len(self.monitors))
         self._build_widgets_tab()
         self.relaunch_desktop_widgets()
 
     def _get_preview_transform(self, cw, ch):
-        mon_idx = self.skin_state.get(self.selected_key, {}).get("monitor", 0) if self.selected_key else 0
-        mon = self.monitors[min(mon_idx, len(self.monitors) - 1)]
+        raw_mon = self.skin_state.get(self.selected_key, {}).get("monitor", 0) if self.selected_key else 0
+        mon_idx = 0 if raw_mon < 0 else min(raw_mon, len(self.monitors) - 1)
+        mon = self.monitors[mon_idx]
         mw, mh = mon["width"], mon["height"]
         scale = min((cw - 40) / mw, (ch - 26) / mh)
         ox = (cw - mw * scale) / 2
@@ -2901,6 +3102,8 @@ class TradDesktopWindowsApp:
         cw = max(500, c.winfo_width())
         ch = max(220, c.winfo_height())
         scale, ox, oy, mw, mh = self._get_preview_transform(cw, ch)
+        raw_sel_mon = self.skin_state.get(self.selected_key, {}).get("monitor", 0) if self.selected_key else 0
+        sel_mon = 0 if raw_sel_mon < 0 else min(raw_sel_mon, len(self.monitors) - 1)
 
         # Monitor outline & subtle grid crosshair
         c.create_rectangle(ox, oy, ox + mw * scale, oy + mh * scale, fill="#111722", outline="#385675", width=1.5)
@@ -2912,11 +3115,22 @@ class TradDesktopWindowsApp:
             st = self.skin_state[key]
             if not st["active"] and key != self.selected_key:
                 continue
+            act_mons = get_active_monitors_for_skin(st, len(self.monitors))
+            if key != self.selected_key and sel_mon not in act_mons:
+                continue
             eff_scale = compute_autofit_scale(s, mw, mh) if st.get("auto_fit", False) else st.get("scale", 1.0)
             w = int(s["est_w"] * eff_scale)
             h = int(s["est_h"] * eff_scale)
             if st["use_custom_pos"]:
-                x, y = st["x"], st["y"]
+                raw_x, raw_y = float(st["x"]), float(st["y"])
+                if st.get("auto_fit", False):
+                    ref_w = max(320, int(st.get("ref_w", 1366)))
+                    ref_h = max(240, int(st.get("ref_h", 768)))
+                    if mw != ref_w or mh != ref_h:
+                        raw_x *= mw / float(ref_w)
+                        raw_y *= mh / float(ref_h)
+                x = max(0, min(mw - w, int(round(raw_x))))
+                y = max(0, min(mh - h, int(round(raw_y))))
             else:
                 x = (mw - w) // 2 if st["anchor_x"] == "center" else (mw - w if st["anchor_x"] == "right" else 0)
                 y = (mh - h) // 2 if st["anchor_y"] == "center" else (mh - h if st["anchor_y"] == "bottom" else 0)
@@ -2972,16 +3186,18 @@ class TradDesktopWindowsApp:
         st["use_custom_pos"] = True
         st["x"] = new_x
         st["y"] = new_y
+        st["ref_w"] = mw
+        st["ref_h"] = mh
         self.x_var.set(new_x)
         self.y_var.set(new_y)
         self._draw_monitor_preview()
 
     def _on_canvas_drag_end(self, _event):
-        save_global_config(self.skins, self.skin_state)
+        save_global_config(self.skins, self.skin_state, len(self.monitors))
         self.relaunch_desktop_widgets()
 
     def _apply_and_reload(self):
-        save_global_config(self.skins, self.skin_state)
+        save_global_config(self.skins, self.skin_state, len(self.monitors))
         self.relaunch_desktop_widgets()
         self._show_toast("Applied positions & reloaded desktop widgets")
 
@@ -3010,6 +3226,8 @@ class TradDesktopWindowsApp:
                     "use_custom_pos": st["use_custom_pos"],
                     "x": st["x"],
                     "y": st["y"],
+                    "ref_width": int(st.get("ref_w", 1366)),
+                    "ref_height": int(st.get("ref_h", 768)),
                     "auto_fit": st["auto_fit"],
                     "scale": st["scale"],
                 }
@@ -3053,8 +3271,9 @@ class TradDesktopWindowsApp:
         for s in self.skins:
             st = self.skin_state.get(s["key"])
             if st and st.get("active"):
-                win = DesktopWidgetWindow(self.root, s, st, self.monitors, self.telemetry, self.open_weather_popup)
-                self.active_desktop_windows.append(win)
+                for m_idx in get_active_monitors_for_skin(st, len(self.monitors)):
+                    win = DesktopWidgetWindow(self.root, s, st, self.monitors, self.telemetry, self.open_weather_popup, mon_idx=m_idx)
+                    self.active_desktop_windows.append(win)
 
     def _on_toggle_power(self):
         self.engine_running = not self.engine_running

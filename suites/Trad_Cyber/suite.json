@@ -11,7 +11,9 @@
       "x": 1031,
       "y": 614,
       "auto_fit": true,
-      "scale": 1.0
+      "scale": 1.0,
+      "ref_width": 1366,
+      "ref_height": 768
     },
     {
       "key": "widgets/BasicClock/BasicClock.ini",
@@ -23,7 +25,9 @@
       "x": 589,
       "y": 115,
       "auto_fit": true,
-      "scale": 1.0
+      "scale": 1.0,
+      "ref_width": 1366,
+      "ref_height": 768
     },
     {
       "key": "widgets/BasicCpu/BasicCpu.ini",
@@ -34,8 +38,10 @@
       "use_custom_pos": true,
       "x": 1201,
       "y": 42,
-      "auto_fit": false,
-      "scale": 1.0
+      "auto_fit": true,
+      "scale": 1.0,
+      "ref_width": 1366,
+      "ref_height": 768
     },
     {
       "key": "widgets/BasicStorage/BasicStorage.ini",
@@ -46,8 +52,10 @@
       "use_custom_pos": true,
       "x": 1037,
       "y": 42,
-      "auto_fit": false,
-      "scale": 1.0
+      "auto_fit": true,
+      "scale": 1.0,
+      "ref_width": 1366,
+      "ref_height": 768
     },
     {
       "key": "widgets/BasicWeather/BasicWeather.ini",
@@ -59,7 +67,9 @@
       "x": 1092,
       "y": 324,
       "auto_fit": true,
-      "scale": 1.0
+      "scale": 1.0,
+      "ref_width": 1366,
+      "ref_height": 768
     },
     {
       "key": "widgets/MusicCompact/MusicCompact.ini",
@@ -70,8 +80,12 @@
       "use_custom_pos": true,
       "x": 1030,
       "y": 215,
-      "auto_fit": false,
-      "scale": 1.0
+      "auto_fit": true,
+      "scale": 1.0,
+      "ref_width": 1366,
+      "ref_height": 768
     }
-  ]
+  ],
+  "ref_width": 1366,
+  "ref_height": 768
 }

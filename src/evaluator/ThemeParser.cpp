@@ -138,8 +138,26 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
                                           const std::string &iniFile,
                                           const std::string &skinsRoot) {
 
-  // Normalize backslashes (Rainmeter config paths) to forward slashes.
+  // Strip optional @<monitorIndex> suffix before filesystem lookup, then re-attach it.
+  std::string monTag;
   std::string rel = config;
+  const std::size_t atPos = rel.rfind('@');
+  if (atPos != std::string::npos && atPos > 4) {
+    const std::string suffix = rel.substr(atPos + 1);
+    bool allDigits = !suffix.empty();
+    for (char c : suffix) {
+      if (c < '0' || c > '9') {
+        allDigits = false;
+        break;
+      }
+    }
+    if (allDigits) {
+      monTag = "@" + suffix;
+      rel = rel.substr(0, atPos);
+    }
+  }
+
+  // Normalize backslashes (Rainmeter config paths) to forward slashes.
   for (char &c : rel) {
     if (c == '\\') {
       c = '/';
@@ -150,34 +168,34 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
   // `suites/...` when launched from the repo root, `build/`, `~/.config/rainmeter-native/`, or `/usr/share/trad-rainmeter/`).
   std::error_code ecCheck;
   if (std::filesystem::is_regular_file(rel, ecCheck)) {
-    return std::filesystem::absolute(rel, ecCheck).lexically_normal().string();
+    return std::filesystem::absolute(rel, ecCheck).lexically_normal().string() + monTag;
   }
   std::filesystem::path parentRel = std::filesystem::path("..") / rel;
   if (std::filesystem::is_regular_file(parentRel, ecCheck)) {
-    return std::filesystem::absolute(parentRel, ecCheck).lexically_normal().string();
+    return std::filesystem::absolute(parentRel, ecCheck).lexically_normal().string() + monTag;
   }
   const char *homeEnv = std::getenv("HOME");
   if (homeEnv) {
     std::filesystem::path userRel = std::filesystem::path(homeEnv) / ".config" / "rainmeter-native" / rel;
     if (std::filesystem::is_regular_file(userRel, ecCheck)) {
-      return std::filesystem::absolute(userRel, ecCheck).lexically_normal().string();
+      return std::filesystem::absolute(userRel, ecCheck).lexically_normal().string() + monTag;
     }
   }
   std::filesystem::path appShare = std::filesystem::path("/app/share/trad-desktop") / rel;
   if (std::filesystem::is_regular_file(appShare, ecCheck)) {
-    return appShare.string();
+    return appShare.string() + monTag;
   }
   std::filesystem::path sysShare = std::filesystem::path("/usr/share/trad-desktop") / rel;
   if (std::filesystem::is_regular_file(sysShare, ecCheck)) {
-    return sysShare.string();
+    return sysShare.string() + monTag;
   }
   std::filesystem::path optShare = std::filesystem::path("/opt/trad-desktop") / rel;
   if (std::filesystem::is_regular_file(optShare, ecCheck)) {
-    return optShare.string();
+    return optShare.string() + monTag;
   }
   std::filesystem::path legacySysShare = std::filesystem::path("/usr/share/trad-rainmeter") / rel;
   if (std::filesystem::is_regular_file(legacySysShare, ecCheck)) {
-    return legacySysShare.string();
+    return legacySysShare.string() + monTag;
   }
 
   // Trim any leading/trailing slashes.
@@ -195,7 +213,7 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
 
   // If the config already names a .ini file, resolve it directly.
   if (endsWith(toLower(rel), ".ini")) {
-    return resolveCaseInsensitivePath(root, rel);
+    return resolveCaseInsensitivePath(root, rel) + monTag;
   }
 
   // Resolve the skin folder path case-insensitively first.
@@ -203,7 +221,7 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
 
   // If an explicit IniFile= hint was provided, append it to the folder.
   if (!iniFile.empty()) {
-    return resolveCaseInsensitivePath(folderPath, iniFile);
+    return resolveCaseInsensitivePath(folderPath, iniFile) + monTag;
   }
 
   // No explicit hint: scan the resolved folder for the first *.ini file.
@@ -213,7 +231,7 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
     if (entry.is_regular_file(ec)) {
       const std::string ext = toLower(entry.path().extension().string());
       if (ext == ".ini") {
-        return entry.path().string();
+        return entry.path().string() + monTag;
       }
     }
   }
@@ -221,7 +239,7 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
   // Nothing found: fall back to the old "<folder>/<leaf>.ini" guess so the
   // caller still gets a path (and a clear open-failure message later).
   const std::string leaf = baseName(rel);
-  return folderPath + "/" + leaf + ".ini";
+  return folderPath + "/" + leaf + ".ini" + monTag;
 }
 
 bool ThemeParser::parse(const std::string &path) {
