@@ -4030,11 +4030,12 @@ class ControlCenterWindow(Adw.ApplicationWindow):
             (18, 10, 145, 72, "CPU", "42%"),
             (178, 10, 195, 72, "08 : 54", "Trad Desktop"),
             (388, 10, 165, 72, "RAM / SWAP", "28% Used"),
-            (568, 10, 195, 72, "♫ Imagine Dragons", "⏮  ⏸  ⏭  •  Visualizer"),
+            (568, 10, 195, 72, "Imagine Dragons", "Visualizer"),
         ]
         for idx, (cx, cy, cw, ch, title_txt, sub_txt) in enumerate(cards):
             if cx + cw > width - 10:
                 break
+            cr.new_path()
             if not borderless:
                 cr.set_source_rgba(bg_r, bg_g, bg_b, bg_a)
                 self._draw_rounded_rect(cr, cx, cy, cw, ch, radius)
@@ -4049,11 +4050,13 @@ class ControlCenterWindow(Adw.ApplicationWindow):
                 # Draw mini circular gauge ring on the right of the card
                 ring_cx = cx + cw - 32
                 ring_cy = cy + ch / 2
+                cr.new_sub_path()
                 cr.set_source_rgba(1.0, 1.0, 1.0, 0.16)
                 cr.set_line_width(4.5)
                 cr.arc(ring_cx, ring_cy, 19, 0, 2 * math.pi)
                 cr.stroke()
 
+                cr.new_sub_path()
                 cr.set_source_rgba(ac_r, ac_g, ac_b, ac_a)
                 cr.set_line_width(4.5)
                 cr.arc(ring_cx, ring_cy, 19, -math.pi / 2, math.pi * 0.65)
@@ -4062,16 +4065,65 @@ class ControlCenterWindow(Adw.ApplicationWindow):
             cr.set_source_rgba(1.0, 1.0, 1.0, 0.95)
             cr.select_font_face("Sans", 0, 1)
             cr.set_font_size(11.5)
-            cr.move_to(cx + 12, cy + 24)
-            cr.show_text(title_txt)
+            if idx == 3:
+                # Draw crisp vector music note icon (♫) instead of missing-glyph box
+                nx, ny = cx + 14, cy + 23
+                cr.new_sub_path()
+                cr.arc(nx, ny, 2.2, 0, 2 * math.pi)
+                cr.fill()
+                cr.new_sub_path()
+                cr.arc(nx + 7, ny - 1, 2.2, 0, 2 * math.pi)
+                cr.fill()
+                cr.set_line_width(1.5)
+                cr.move_to(nx + 1.5, ny)
+                cr.line_to(nx + 1.5, ny - 8)
+                cr.line_to(nx + 8.5, ny - 9)
+                cr.line_to(nx + 8.5, ny - 1)
+                cr.stroke()
+                cr.move_to(cx + 28, cy + 24)
+                cr.show_text(title_txt)
+            else:
+                cr.move_to(cx + 12, cy + 24)
+                cr.show_text(title_txt)
 
             cr.set_source_rgba(ac_r, ac_g, ac_b, ac_a)
             cr.set_font_size(10.5)
-            cr.move_to(cx + 12, cy + 42)
-            cr.show_text(sub_txt)
+            if idx == 3:
+                # Draw crisp vector prev / pause / next transport icons
+                iy = cy + 38
+                # Prev (|<)
+                cr.rectangle(cx + 12, iy - 4, 1.6, 8)
+                cr.fill()
+                cr.move_to(cx + 19, iy - 4)
+                cr.line_to(cx + 14, iy)
+                cr.line_to(cx + 19, iy + 4)
+                cr.close_path()
+                cr.fill()
+                # Pause (||)
+                cr.rectangle(cx + 25, iy - 4, 2.0, 8)
+                cr.rectangle(cx + 29, iy - 4, 2.0, 8)
+                cr.fill()
+                # Next (>|)
+                cr.move_to(cx + 36, iy - 4)
+                cr.line_to(cx + 41, iy)
+                cr.line_to(cx + 36, iy + 4)
+                cr.close_path()
+                cr.fill()
+                cr.rectangle(cx + 41.4, iy - 4, 1.6, 8)
+                cr.fill()
+                # Bullet + "Visualizer"
+                cr.new_sub_path()
+                cr.arc(cx + 50, iy, 1.6, 0, 2 * math.pi)
+                cr.fill()
+                cr.move_to(cx + 56, cy + 42)
+                cr.show_text(sub_txt)
+            else:
+                cr.move_to(cx + 12, cy + 42)
+                cr.show_text(sub_txt)
 
             if idx == 3:
                 # Draw mini spectrum visualizer bars on the 4th card
+                cr.new_path()
                 for b in range(12):
                     bh = 5 + ((b * 7) % 16)
                     bx = cx + 12 + b * 13
@@ -4079,8 +4131,10 @@ class ControlCenterWindow(Adw.ApplicationWindow):
                     cr.rectangle(bx, by, 8, bh)
                     cr.fill()
             elif design["id"] != "circular":
+                cr.new_path()
                 cr.rectangle(cx + 12, cy + 54, cw - 24, 5)
                 cr.fill()
+            cr.new_path()
 
     def _apply_current_basic_style_and_reload(self, toast_msg):
         theme = BASIC_WIDGET_THEMES[self.basic_theme_idx]
@@ -5036,7 +5090,8 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         if not self.selected_key:
             return 1.0, 0, 0, 1366, 768
         st = self.skin_state[self.selected_key]
-        mon = self.monitors[min(st["monitor"], len(self.monitors) - 1)]
+        mon_idx = 0 if st["monitor"] < 0 else min(st["monitor"], len(self.monitors) - 1)
+        mon = self.monitors[mon_idx]
         mon_w, mon_h = mon["width"], mon["height"]
         pad = 20
         scale = min((area_w - 2 * pad) / mon_w, (area_h - 2 * pad) / mon_h)
@@ -5081,14 +5136,17 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         if not self.selected_key:
             return
 
-        cur_mon = self.skin_state[self.selected_key]["monitor"]
+        raw_mon = self.skin_state[self.selected_key]["monitor"]
+        cur_mon = 0 if raw_mon < 0 else min(raw_mon, len(self.monitors) - 1)
 
         to_draw = []
         for s in self.skins:
             k = s["key"]
             st = self.skin_state[k]
-            if k != self.selected_key and st["active"] and st["monitor"] == cur_mon:
-                to_draw.append((s, st, False))
+            if k != self.selected_key and st["active"]:
+                act_mons = get_active_monitors_for_skin(st, len(self.monitors))
+                if cur_mon in act_mons:
+                    to_draw.append((s, st, False))
         sel_info = next((s for s in self.skins if s["key"] == self.selected_key), None)
         if sel_info:
             to_draw.append((sel_info, self.skin_state[self.selected_key], True))
@@ -5098,7 +5156,15 @@ class ControlCenterWindow(Adw.ApplicationWindow):
             w_px = min(mon_w, skin_info["est_w"] * eff_scale)
             h_px = min(mon_h, skin_info["est_h"] * eff_scale)
             if st["use_custom_pos"]:
-                x_px, y_px = st["x"], st["y"]
+                raw_x, raw_y = float(st["x"]), float(st["y"])
+                if st.get("auto_fit", False):
+                    ref_w = max(320, int(st.get("ref_w", 1366)))
+                    ref_h = max(240, int(st.get("ref_h", 768)))
+                    if mon_w != ref_w or mon_h != ref_h:
+                        raw_x *= mon_w / float(ref_w)
+                        raw_y *= mon_h / float(ref_h)
+                x_px = max(0, min(mon_w - w_px, int(round(raw_x))))
+                y_px = max(0, min(mon_h - h_px, int(round(raw_y))))
             else:
                 x_px, y_px = self._compute_anchored_xy(skin_info, st)
 
@@ -5123,12 +5189,21 @@ class ControlCenterWindow(Adw.ApplicationWindow):
             cr.rectangle(wx, wy, ww, wh)
             cr.stroke()
 
+            cr.save()
+            cr.rectangle(wx + 2, wy + 2, max(1, ww - 4), max(1, wh - 4))
+            cr.clip()
             cr.set_source_rgba(1.0, 1.0, 1.0, 0.95)
             cr.select_font_face("Sans", 0, 1)
-            cr.set_font_size(11)
-            label = f"{skin_info['title']} ({int(x_px)}, {int(y_px)}) [{eff_scale:.2f}×]"
-            cr.move_to(wx + 6, wy + 16)
-            cr.show_text(label)
+            cr.set_font_size(9.5)
+            cr.move_to(wx + 4, wy + 13)
+            cr.show_text(skin_info["title"])
+            if wh >= 28:
+                cr.set_source_rgba(0.85, 0.92, 1.0, 0.85)
+                cr.set_font_size(8.5)
+                cr.move_to(wx + 4, wy + 24)
+                cr.show_text(f"({int(x_px)},{int(y_px)}) {eff_scale:.2f}×")
+            cr.restore()
+            cr.new_path()
 
     def _on_preview_drag_begin(self, _gesture, start_x, start_y):
         if not self.selected_key:
@@ -5136,7 +5211,8 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         w = self.preview_area.get_width()
         h = self.preview_area.get_height()
         scale, off_x, off_y, mon_w, mon_h = self._get_preview_transform(w, h)
-        cur_mon = self.skin_state[self.selected_key]["monitor"]
+        raw_mon = self.skin_state[self.selected_key]["monitor"]
+        cur_mon = 0 if raw_mon < 0 else min(raw_mon, len(self.monitors) - 1)
 
         if scale > 0:
             click_mon_x = (start_x - off_x) / scale
@@ -5146,7 +5222,8 @@ class ControlCenterWindow(Adw.ApplicationWindow):
                 st = self.skin_state[k]
                 if not st["active"] and k != self.selected_key:
                     continue
-                if st["monitor"] != cur_mon:
+                act_mons = get_active_monitors_for_skin(st, len(self.monitors))
+                if k != self.selected_key and cur_mon not in act_mons:
                     continue
                 eff_scale = self._get_effective_scale(s, st)
                 w_px = min(mon_w, s["est_w"] * eff_scale)
@@ -5981,6 +6058,7 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
 
         # Points + Temperature values at bottom
         for i, (px, py) in enumerate(pts):
+            cr.new_sub_path()
             cr.set_source_rgba(0.98, 0.80, 0.25, 1.0)
             cr.arc(px, py, 3.2, 0, 6.28318)
             cr.fill()
@@ -5989,6 +6067,7 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
             cr.set_font_size(11.5)
             cr.move_to(px - 11, height - 14)
             cr.show_text(f"{round(slice_v[i])}°")
+            cr.new_path()
 
 
 class RainmeterControlApp(Adw.Application):

@@ -2621,7 +2621,7 @@ class TradDesktopWindowsApp:
             (18, 12, 155, 72, "CPU", "42%"),
             (188, 12, 195, 72, "08 : 54", "Trad Desktop"),
             (398, 12, 170, 72, "RAM / SWAP", "28% Used"),
-            (584, 12, 200, 72, "♫ Imagine Dragons", "⏮  ⏸  ⏭  •  Visualizer"),
+            (584, 12, 200, 72, "Imagine Dragons", "Visualizer"),
         ]
         for idx, (cx, cy, cw, ch, title_txt, sub_txt) in enumerate(cards):
             if cx + cw > w - 10:
@@ -2633,8 +2633,25 @@ class TradDesktopWindowsApp:
                 c.create_oval(rx - 18, ry - 18, rx + 18, ry + 18, outline="#31394D", width=4)
                 c.create_arc(rx - 18, ry - 18, rx + 18, ry + 18, start=90, extent=-210, style="arc", outline=ac_hex, width=4)
 
-            c.create_text(cx + 12, cy + 20, anchor="w", text=title_txt, fill="#FFFFFF", font=("Segoe UI", 9, "bold"))
-            c.create_text(cx + 12, cy + 38, anchor="w", text=sub_txt, fill=ac_hex, font=("Segoe UI", 8, "bold"))
+            if idx == 3:
+                nx, ny = cx + 14, cy + 22
+                c.create_oval(nx - 2, ny - 2, nx + 2, ny + 2, fill="#FFFFFF", outline="")
+                c.create_oval(nx + 5, ny - 3, nx + 9, ny + 1, fill="#FFFFFF", outline="")
+                c.create_line(nx + 1, ny, nx + 1, ny - 8, nx + 8, ny - 9, nx + 8, ny - 1, fill="#FFFFFF", width=1.5)
+                c.create_text(cx + 28, cy + 20, anchor="w", text=title_txt, fill="#FFFFFF", font=("Segoe UI", 9, "bold"))
+
+                iy = cy + 38
+                c.create_rectangle(cx + 12, iy - 4, cx + 14, iy + 4, fill=ac_hex, outline="")
+                c.create_polygon(cx + 19, iy - 4, cx + 14, iy, cx + 19, iy + 4, fill=ac_hex, outline="")
+                c.create_rectangle(cx + 25, iy - 4, cx + 27, iy + 4, fill=ac_hex, outline="")
+                c.create_rectangle(cx + 29, iy - 4, cx + 31, iy + 4, fill=ac_hex, outline="")
+                c.create_polygon(cx + 36, iy - 4, cx + 41, iy, cx + 36, iy + 4, fill=ac_hex, outline="")
+                c.create_rectangle(cx + 41, iy - 4, cx + 43, iy + 4, fill=ac_hex, outline="")
+                c.create_oval(cx + 48, iy - 1.5, cx + 51, iy + 1.5, fill=ac_hex, outline="")
+                c.create_text(cx + 56, cy + 38, anchor="w", text=sub_txt, fill=ac_hex, font=("Segoe UI", 8, "bold"))
+            else:
+                c.create_text(cx + 12, cy + 20, anchor="w", text=title_txt, fill="#FFFFFF", font=("Segoe UI", 9, "bold"))
+                c.create_text(cx + 12, cy + 38, anchor="w", text=sub_txt, fill=ac_hex, font=("Segoe UI", 8, "bold"))
 
             if idx == 3:
                 for b in range(12):
