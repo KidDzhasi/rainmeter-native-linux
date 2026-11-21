@@ -311,13 +311,13 @@ void NowPlayingBackend::workerThread() {
             } else {
                 info.title = "Media Paused / Stopped";
                 info.artist = "Click Play to Resume";
-                info.album = "Trad Rainmeter Media";
+                info.album = "Trad Desktop Media";
             }
         } else {
             info.state = 0;
             info.title = "No Media Playing";
             info.artist = "Start Spotify, Browser, or Music App";
-            info.album = "Trad Rainmeter Media";
+            info.album = "Trad Desktop Media";
             info.coverUrl = "";
         }
 

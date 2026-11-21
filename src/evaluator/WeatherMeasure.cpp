@@ -142,8 +142,8 @@ int metSymbolToWmo(const std::string& sym) {
 
 std::string cacheFilePath(double lat, double lon, bool imperial) {
     const char* home = std::getenv("HOME");
-    std::filesystem::path dir = home ? (std::filesystem::path(home) / ".cache" / "trad-rainmeter")
-                                     : std::filesystem::path("/tmp/trad-rainmeter");
+    std::filesystem::path dir = home ? (std::filesystem::path(home) / ".cache" / "trad-desktop")
+                                     : std::filesystem::path("/tmp/trad-desktop");
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     char fname[96];
@@ -194,7 +194,7 @@ bool httpGetUrl(const std::string& url, std::string& body, long& httpCode) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 12L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "TradRainmeter/1.0 (github.com/KidDzhasi/Trad-rainmeter)");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "TradDesktop/1.2 (github.com/KidDzhasi/Trad-Desktop)");
     CURLcode res = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
     curl_easy_cleanup(curl);

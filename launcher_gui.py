@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Rainmeter Native — GTK4 / Libadwaita Desktop Control Center
+Trad Desktop — GTK4 / Libadwaita Desktop Control Center
 Features three dedicated tabs:
   1. Suites: One-click suite switching (auto-removes previous suite & replaces it)
      with automatic monitor resolution fitting (AutoFit).
@@ -521,7 +521,7 @@ def search_weather_locations(query):
                         "outFields": "Match_addr,Place_addr,Type,Country",
                     }
                 )
-                req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+                req = urllib.request.Request(url, headers={"User-Agent": "TradDesktop/1.0"})
                 with urllib.request.urlopen(req, timeout=4) as resp:
                     data = json.loads(resp.read().decode("utf-8", errors="ignore"))
                 for c in data.get("candidates", []):
@@ -546,7 +546,7 @@ def search_weather_locations(query):
                 url = "https://geocoding-api.open-meteo.com/v1/search?" + urllib.parse.urlencode(
                     {"name": term, "count": 5, "language": "en", "format": "json"}
                 )
-                req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+                req = urllib.request.Request(url, headers={"User-Agent": "TradDesktop/1.0"})
                 with urllib.request.urlopen(req, timeout=4) as resp:
                     data = json.loads(resp.read().decode("utf-8", errors="ignore"))
                 for item in data.get("results", []):
@@ -589,7 +589,7 @@ def search_weather_locations(query):
                 url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
                     {"q": queries[0], "format": "json", "limit": 4, "addressdetails": 1}
                 )
-                req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+                req = urllib.request.Request(url, headers={"User-Agent": "TradDesktop/1.0"})
                 with urllib.request.urlopen(req, timeout=4) as resp:
                     items = json.loads(resp.read().decode("utf-8", errors="ignore"))
                 for item in items:
@@ -614,7 +614,7 @@ def search_weather_locations(query):
             out = []
             try:
                 url = "https://photon.komoot.io/api/?" + urllib.parse.urlencode({"q": queries[0], "limit": 4})
-                req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+                req = urllib.request.Request(url, headers={"User-Agent": "TradDesktop/1.0"})
                 with urllib.request.urlopen(req, timeout=4) as resp:
                     data = json.loads(resp.read().decode("utf-8", errors="ignore"))
                 for feat in data.get("features", []):
@@ -686,7 +686,7 @@ def wind_compass(deg):
 
 
 _FORECAST_CACHE = {}
-_WEATHER_CACHE_DIR = os.path.expanduser("~/.cache/trad-rainmeter")
+_WEATHER_CACHE_DIR = os.path.expanduser("~/.cache/trad-desktop")
 _RELAUNCH_LOCK = threading.Lock()
 
 
@@ -723,7 +723,7 @@ def _fetch_metno_as_openmeteo(lat, lon, units="metric"):
 
     url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={lat:.4f}&lon={lon:.4f}"
     req = urllib.request.Request(
-        url, headers={"User-Agent": "TradRainmeter/1.0 (github.com/KidDzhasi/Trad-rainmeter)"}
+        url, headers={"User-Agent": "TradDesktop/1.0 (github.com/KidDzhasi/Trad-Desktop)"}
     )
     with urllib.request.urlopen(req, timeout=8) as resp:
         raw = json.loads(resp.read().decode("utf-8", errors="ignore"))
@@ -879,7 +879,7 @@ def fetch_full_weather_forecast(lat, lon, units="metric", force=False):
             params["wind_speed_unit"] = "mph"
 
         url = "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={"User-Agent": "TradRainmeter/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "TradDesktop/1.0"})
         with urllib.request.urlopen(req, timeout=6) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="ignore"))
     except Exception as exc:
@@ -3169,7 +3169,7 @@ def save_global_config(skins, state):
 class ControlCenterWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
-        self.set_title("Trad Rainmeter")
+        self.set_title("Trad Desktop")
         self.set_default_size(1080, 780)
         try:
             disp = Gdk.Display.get_default()
@@ -3236,7 +3236,7 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         header = Adw.HeaderBar()
         root_box.append(header)
 
-        install_btn = Gtk.Button(label="Install .rmskin / .ini…")
+        install_btn = Gtk.Button(label="Install Skin / .ini…")
         install_btn.add_css_class("suggested-action")
         install_btn.connect("clicked", self._on_install_clicked)
         header.pack_start(install_btn)
@@ -3329,7 +3329,7 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         basic_page.set_child(basic_vbox)
 
         theme_group = Adw.PreferencesGroup(
-            title="Trad Rainmeter — Theme, Shape and Design Studio",
+            title="Trad Desktop — Theme, Shape and Design Studio",
             description="Customize Color Theme, Card Shape (Rounded, Squircle, Pill Capsule, Circular, Borderless), and Gauge Design (Vertical Bars, Circular Rings, Capsule Pill, Horizontal Minimal).",
         )
         basic_vbox.append(theme_group)
@@ -3914,7 +3914,7 @@ class ControlCenterWindow(Adw.ApplicationWindow):
 
         cards = [
             (18, 10, 145, 72, "CPU", "42%"),
-            (178, 10, 195, 72, "08 : 54", "Trad Rainmeter"),
+            (178, 10, 195, 72, "08 : 54", "Trad Desktop"),
             (388, 10, 165, 72, "RAM / SWAP", "28% Used"),
             (568, 10, 195, 72, "♫ Imagine Dragons", "⏮  ⏸  ⏭  •  Visualizer"),
         ]
@@ -4955,14 +4955,14 @@ class ControlCenterWindow(Adw.ApplicationWindow):
     # --- File Installation (.rmskin / .ini / .zip) ---
     def _on_install_clicked(self, _btn):
         dialog = Gtk.FileDialog.new()
-        dialog.set_title("Install Rainmeter Skin (.rmskin, .ini, or .zip)")
+        dialog.set_title("Install Desktop Skin (.rmskin, .ini, or .zip)")
 
         if os.path.isdir(COMMUNITY_DIR):
             dialog.set_initial_folder(Gio.File.new_for_path(COMMUNITY_DIR))
 
         filters = Gio.ListStore.new(Gtk.FileFilter)
         f_all = Gtk.FileFilter()
-        f_all.set_name("Rainmeter Skins (*.rmskin, *.ini, *.zip)")
+        f_all.set_name("Desktop Widget Skins (*.rmskin, *.ini, *.zip)")
         f_all.add_pattern("*.rmskin")
         f_all.add_pattern("*.RMSKIN")
         f_all.add_pattern("*.ini")
@@ -5163,7 +5163,7 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
     def __init__(self, app, on_change_cb=None):
         super().__init__(application=app)
         self.on_change_cb = on_change_cb
-        self.set_title("Trad Rainmeter — Weather Forecast")
+        self.set_title("Trad Desktop — Weather Forecast")
         self.set_default_size(920, 700)
 
         (
@@ -5744,7 +5744,7 @@ class WeatherForecastWindow(Adw.ApplicationWindow):
 class RainmeterControlApp(Adw.Application):
     def __init__(self):
         super().__init__(
-            application_id="com.github.kiddzhasi.TradRainmeter",
+            application_id="com.github.kiddzhasi.TradDesktop",
             flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
 
@@ -5760,7 +5760,7 @@ class RainmeterControlApp(Adw.Application):
 class WeatherPopupApp(Adw.Application):
     def __init__(self):
         super().__init__(
-            application_id="com.github.kiddzhasi.TradRainmeter.Weather",
+            application_id="com.github.kiddzhasi.TradDesktop.Weather",
             flags=Gio.ApplicationFlags.NON_UNIQUE,
         )
 

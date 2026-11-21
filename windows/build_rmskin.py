@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Trad Rainmeter — Official Windows .rmskin Package Builder
+Trad Desktop — Official Windows .rmskin Package Builder
 Creates a genuine Windows Rainmeter .rmskin installer package with:
   1. RMSKIN.ini & 400x60 24-bit RMSKIN.bmp header banner
   2. All Trad Suites (TradSunset, DashboardSuite, GreenRibbonSuite, TealMountainSuite)
   3. All 13 Modular Widgets (8 Basic Telemetry Widgets + 3 Music Players + 2 Audio Visualizers)
      plus current Theme.inc & Weather.inc
   4. Automatic Windows Rainmeter WebParser fallback for Measure=Weather so weather skins
-     work both in TradRainmeter.exe (Standalone Engine) AND classic Windows Rainmeter 4.5+!
+     work both in TradDesktop.exe (Standalone Engine) AND classic Windows Rainmeter 4.5+!
   5. Official 16-byte binary RMSKIN footer (<int64 zip_size><uint8 flags=0>"RMSKIN\\0")
      required by Windows Rainmeter SkinInstaller.exe.
 """
@@ -63,7 +63,7 @@ def make_rmskin_header_bmp(width=400, height=60):
 
 def convert_ini_for_windows_rainmeter(content, is_widget=False):
     """
-    Ensure .ini skin text works seamlessly in both TradRainmeter.exe and classic
+    Ensure .ini skin text works seamlessly in both TradDesktop.exe and classic
     Windows Rainmeter 4.5+:
       - Normalize @Include paths to Windows backslashes
       - Normalize Linux strftime %-I / %-d to Windows %#I / %#d
@@ -76,28 +76,28 @@ def convert_ini_for_windows_rainmeter(content, is_widget=False):
 
 
 def build_rmskin_package(output_path=None, version="1.1.0", config_dir=None):
-    """Build TradRainmeter_<version>.rmskin and append the official 16-byte binary footer."""
+    """Build TradDesktop_<version>.rmskin and append the official 16-byte binary footer."""
     if output_path is None:
         dist_dir = os.path.join(REPO_DIR, "dist")
         os.makedirs(dist_dir, exist_ok=True)
-        output_path = os.path.join(dist_dir, f"TradRainmeter_{version}.rmskin")
+        output_path = os.path.join(dist_dir, f"TradDesktop_{version}.rmskin")
     else:
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
     if config_dir is None:
         if sys.platform == "win32":
             appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-            config_dir = os.path.join(appdata, "TradRainmeter")
+            config_dir = os.path.join(appdata, "TradDesktop")
         else:
             config_dir = os.path.expanduser("~/.config/rainmeter-native")
 
     rmskin_ini = (
         "[rmskin]\r\n"
-        "Name=Trad Rainmeter Suite & Widgets\r\n"
+        "Name=Trad Desktop Suite & Widgets\r\n"
         "Author=K-Trad (KidDzhasi)\r\n"
         f"Version={version}\r\n"
         "LoadType=Skin\r\n"
-        "Load=TradRainmeter\\Suites\\TradSunset\\TradSunset.ini\r\n"
+        "Load=TradDesktop\\Suites\\TradSunset\\TradSunset.ini\r\n"
         "MinimumRainmeter=4.5.0\r\n"
         "MinimumWindows=6.1\r\n"
     )
@@ -106,7 +106,7 @@ def build_rmskin_package(output_path=None, version="1.1.0", config_dir=None):
         zf.writestr("RMSKIN.ini", rmskin_ini.encode("utf-8"))
         zf.writestr("RMSKIN.bmp", make_rmskin_header_bmp())
 
-        # Include Theme.inc and Weather.inc in Skins/TradRainmeter/@Resources/
+        # Include Theme.inc and Weather.inc in Skins/TradDesktop/@Resources/
         for inc_name in ("Theme.inc", "Weather.inc"):
             user_inc = os.path.join(config_dir, inc_name)
             repo_inc = os.path.join(REPO_DIR, "widgets", inc_name)
@@ -114,8 +114,8 @@ def build_rmskin_package(output_path=None, version="1.1.0", config_dir=None):
             if os.path.isfile(src_inc):
                 with open(src_inc, "r", encoding="utf-8", errors="ignore") as f:
                     inc_text = f.read()
-                zf.writestr(f"Skins/TradRainmeter/@Resources/{inc_name}", inc_text.encode("utf-8"))
-                zf.writestr(f"Skins/TradRainmeter/Widgets/{inc_name}", inc_text.encode("utf-8"))
+                zf.writestr(f"Skins/TradDesktop/@Resources/{inc_name}", inc_text.encode("utf-8"))
+                zf.writestr(f"Skins/TradDesktop/Widgets/{inc_name}", inc_text.encode("utf-8"))
 
         # Package all Suites
         suites_dir = os.path.join(REPO_DIR, "suites")
@@ -124,7 +124,7 @@ def build_rmskin_package(output_path=None, version="1.1.0", config_dir=None):
                 for file in sorted(files):
                     full_p = os.path.join(root, file)
                     rel_p = os.path.relpath(full_p, suites_dir).replace("\\", "/")
-                    arc_p = f"Skins/TradRainmeter/Suites/{rel_p}"
+                    arc_p = f"Skins/TradDesktop/Suites/{rel_p}"
                     if file.lower().endswith((".ini", ".inc")):
                         with open(full_p, "r", encoding="utf-8", errors="ignore") as f:
                             txt = convert_ini_for_windows_rainmeter(f.read(), is_widget=False)
@@ -141,7 +141,7 @@ def build_rmskin_package(output_path=None, version="1.1.0", config_dir=None):
                         continue
                     full_p = os.path.join(root, file)
                     rel_p = os.path.relpath(full_p, widgets_dir).replace("\\", "/")
-                    arc_p = f"Skins/TradRainmeter/Widgets/{rel_p}"
+                    arc_p = f"Skins/TradDesktop/Widgets/{rel_p}"
                     if file.lower().endswith((".ini", ".inc")):
                         with open(full_p, "r", encoding="utf-8", errors="ignore") as f:
                             txt = convert_ini_for_windows_rainmeter(f.read(), is_widget=True)

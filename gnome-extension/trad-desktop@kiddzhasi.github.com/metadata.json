@@ -1,0 +1,16 @@
+{
+  "uuid": "trad-desktop@kiddzhasi.github.com",
+  "name": "Trad Desktop",
+  "description": "Native Linux desktop widgets, suites, themes, live weather, music players, and real-time audio visualizers for GNOME.",
+  "shell-version": [
+    "45",
+    "46",
+    "47",
+    "48",
+    "49",
+    "50",
+    "51"
+  ],
+  "url": "https://github.com/KidDzhasi/Trad-Desktop",
+  "version": 3
+}

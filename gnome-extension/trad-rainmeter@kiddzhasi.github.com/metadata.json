@@ -1,7 +1,7 @@
 {
   "uuid": "trad-rainmeter@kiddzhasi.github.com",
-  "name": "Trad Rainmeter",
-  "description": "Native Linux Rainmeter desktop widgets, suites, themes, music players, and real-time audio visualizers for GNOME.",
+  "name": "Trad Desktop",
+  "description": "Native Linux desktop widgets, suites, themes, live weather, music players, and real-time audio visualizers for GNOME.",
   "shell-version": [
     "45",
     "46",
@@ -11,6 +11,6 @@
     "50",
     "51"
   ],
-  "url": "https://github.com/KidDzhasi/Trad-rainmeter",
-  "version": 2
+  "url": "https://github.com/KidDzhasi/Trad-Desktop",
+  "version": 3
 }

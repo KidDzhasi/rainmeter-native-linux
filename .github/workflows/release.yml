@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 1.1.0)'
+        description: 'Release version (e.g. 1.2.0)'
         required: false
-        default: '1.1.0'
+        default: '1.2.0'
 
 jobs:
   build-and-release:
@@ -46,13 +46,13 @@ jobs:
           chmod +x scripts/build-deb.sh install-apt.sh
           ./scripts/build-deb.sh "${TAG_VER}"
 
-          mkdir -p dist/trad-rainmeter
-          cp build/rainmeter-native build/rmskin-unpacker dist/trad-rainmeter/
-          cp launcher_gui.py install-apt.sh README.md LICENSE dist/trad-rainmeter/
-          cp -r assets suites widgets community gnome-extension dist/trad-rainmeter/
-          tar -czvf dist/trad-rainmeter-linux-x86_64.tar.gz -C dist trad-rainmeter
+          mkdir -p dist/trad-desktop
+          cp build/rainmeter-native build/rmskin-unpacker dist/trad-desktop/
+          cp launcher_gui.py install-apt.sh README.md LICENSE dist/trad-desktop/
+          cp -r assets suites widgets community gnome-extension dist/trad-desktop/
+          tar -czvf dist/trad-desktop-linux-x86_64.tar.gz -C dist trad-desktop
 
-          python3 -c 'import zipfile, os; src="gnome-extension/trad-rainmeter@kiddzhasi.github.com"; z=zipfile.ZipFile("dist/trad-rainmeter@kiddzhasi.github.com.shell-extension.zip","w",zipfile.ZIP_DEFLATED); [z.write(os.path.join(src,f), f) for f in sorted(os.listdir(src))]; z.close()'
+          python3 -c 'import zipfile, os; src="gnome-extension/trad-desktop@kiddzhasi.github.com"; z=zipfile.ZipFile("dist/trad-desktop@kiddzhasi.github.com.shell-extension.zip","w",zipfile.ZIP_DEFLATED); [z.write(os.path.join(src,f), f) for f in sorted(os.listdir(src))]; z.close()'
 
       - name: 📦 Build Flatpak Bundle
         run: |
@@ -68,8 +68,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/trad-rainmeter_*.deb
-            dist/trad-rainmeter-linux-x86_64.tar.gz
-            dist/trad-rainmeter@kiddzhasi.github.com.shell-extension.zip
-            dist/trad-rainmeter.flatpak
+            dist/trad-desktop_*.deb
+            dist/trad-desktop-linux-x86_64.tar.gz
+            dist/trad-desktop@kiddzhasi.github.com.shell-extension.zip
+            dist/trad-desktop.flatpak
           generate_release_notes: true

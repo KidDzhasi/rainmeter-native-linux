@@ -163,17 +163,21 @@ std::string ThemeParser::resolveWidgetIni(const std::string &config,
       return std::filesystem::absolute(userRel, ecCheck).lexically_normal().string();
     }
   }
-  std::filesystem::path appShare = std::filesystem::path("/app/share/trad-rainmeter") / rel;
+  std::filesystem::path appShare = std::filesystem::path("/app/share/trad-desktop") / rel;
   if (std::filesystem::is_regular_file(appShare, ecCheck)) {
     return appShare.string();
   }
-  std::filesystem::path sysShare = std::filesystem::path("/usr/share/trad-rainmeter") / rel;
+  std::filesystem::path sysShare = std::filesystem::path("/usr/share/trad-desktop") / rel;
   if (std::filesystem::is_regular_file(sysShare, ecCheck)) {
     return sysShare.string();
   }
-  std::filesystem::path optShare = std::filesystem::path("/opt/trad-rainmeter") / rel;
+  std::filesystem::path optShare = std::filesystem::path("/opt/trad-desktop") / rel;
   if (std::filesystem::is_regular_file(optShare, ecCheck)) {
     return optShare.string();
+  }
+  std::filesystem::path legacySysShare = std::filesystem::path("/usr/share/trad-rainmeter") / rel;
+  if (std::filesystem::is_regular_file(legacySysShare, ecCheck)) {
+    return legacySysShare.string();
   }
 
   // Trim any leading/trailing slashes.

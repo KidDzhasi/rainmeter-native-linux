@@ -32,5 +32,5 @@ jobs:
         run: |
           python3 -m py_compile launcher_gui.py
           chmod +x scripts/build-deb.sh
-          ./scripts/build-deb.sh 1.1.0
-          dpkg-deb --info dist/trad-rainmeter_1.1.0_*.deb
+          ./scripts/build-deb.sh 1.2.0
+          dpkg-deb --info dist/trad-desktop_1.2.0_*.deb

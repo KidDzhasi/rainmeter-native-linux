@@ -8,10 +8,10 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-const TradRainmeterIndicator = GObject.registerClass(
-class TradRainmeterIndicator extends PanelMenu.Button {
+const TradDesktopIndicator = GObject.registerClass(
+class TradDesktopIndicator extends PanelMenu.Button {
     _init(extension) {
-        super._init(0.0, 'Trad Rainmeter');
+        super._init(0.0, 'Trad Desktop');
         this._extension = extension;
 
         const icon = new St.Icon({
@@ -20,36 +20,31 @@ class TradRainmeterIndicator extends PanelMenu.Button {
         });
         this.add_child(icon);
 
-        // Header item
-        const headerItem = new PopupMenu.PopupMenuItem('Trad Rainmeter Desktop Engine', {
+        const headerItem = new PopupMenu.PopupMenuItem('Trad Desktop Engine', {
             reactive: false,
-            style_class: 'trad-rainmeter-header',
+            style_class: 'trad-desktop-header',
         });
         this.menu.addMenuItem(headerItem);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // Open Control Center
-        const openGuiItem = new PopupMenu.PopupMenuItem('Open Trad Rainmeter Control Center');
+        const openGuiItem = new PopupMenu.PopupMenuItem('Open Trad Desktop Control Center');
         openGuiItem.connect('activate', () => {
             this._spawnCommand(['python3', this._getRepoFile('launcher_gui.py')]);
         });
         this.menu.addMenuItem(openGuiItem);
 
-        // Open Weather Forecast & Villages
         const weatherItem = new PopupMenu.PopupMenuItem('Weather Forecast & Locations');
         weatherItem.connect('activate', () => {
             this._spawnCommand(['python3', this._getRepoFile('launcher_gui.py'), '--weather-popup']);
         });
         this.menu.addMenuItem(weatherItem);
 
-        // Reload Active Widgets
         const reloadItem = new PopupMenu.PopupMenuItem('Reload Active Desktop Widgets');
         reloadItem.connect('activate', () => {
             this._spawnCommand(['python3', this._getRepoFile('launcher_gui.py'), '--reload']);
         });
         this.menu.addMenuItem(reloadItem);
 
-        // Stop Engine
         const stopItem = new PopupMenu.PopupMenuItem('Turn OFF Desktop Widgets');
         stopItem.connect('activate', () => {
             this._spawnCommand(['pkill', '-f', 'rainmeter-native']);
@@ -58,7 +53,6 @@ class TradRainmeterIndicator extends PanelMenu.Button {
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // Preferences
         const prefsItem = new PopupMenu.PopupMenuItem('Extension Preferences…');
         prefsItem.connect('activate', () => {
             this._extension.openPreferences();
@@ -69,11 +63,11 @@ class TradRainmeterIndicator extends PanelMenu.Button {
     _getRepoDir() {
         const home = GLib.get_home_dir();
         const candidates = [
-            '/usr/share/trad-rainmeter',
-            '/opt/trad-rainmeter',
-            GLib.build_filenamev([home, 'Documents', 'GitHub', 'Trad-rainmeter']),
+            '/usr/share/trad-desktop',
+            '/opt/trad-desktop',
+            GLib.build_filenamev([home, 'Documents', 'GitHub', 'Trad-Desktop']),
             GLib.build_filenamev([home, 'Documents', 'GitHub', 'rainmeter-native-linux']),
-            GLib.build_filenamev([home, '.local', 'share', 'trad-rainmeter']),
+            GLib.build_filenamev([home, '.local', 'share', 'trad-desktop']),
         ];
         for (const dir of candidates) {
             if (GLib.file_test(GLib.build_filenamev([dir, 'launcher_gui.py']), GLib.FileTest.EXISTS))
@@ -90,14 +84,14 @@ class TradRainmeterIndicator extends PanelMenu.Button {
         try {
             Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE);
         } catch (e) {
-            console.error(`[Trad Rainmeter] Failed to spawn command: ${e}`);
+            console.error(`[Trad Desktop] Failed to spawn command: ${e}`);
         }
     }
 });
 
-export default class TradRainmeterExtension extends Extension {
+export default class TradDesktopExtension extends Extension {
     enable() {
-        this._indicator = new TradRainmeterIndicator(this);
+        this._indicator = new TradDesktopIndicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
     }
 

@@ -1,8 +1,8 @@
-app-id: com.github.kiddzhasi.TradRainmeter
+app-id: com.github.kiddzhasi.TradDesktop
 runtime: org.gnome.Platform
 runtime-version: '51'
 sdk: org.gnome.Sdk
-command: trad-rainmeter-gui
+command: trad-desktop-gui
 
 finish-args:
   - --share=ipc
@@ -14,7 +14,7 @@ finish-args:
   - --talk-name=org.freedesktop.DBus
   - --talk-name=org.mpris.MediaPlayer2.*
   - --filesystem=xdg-config/rainmeter-native:create
-  - --filesystem=xdg-cache/trad-rainmeter:create
+  - --filesystem=xdg-cache/trad-desktop:create
   - --filesystem=xdg-download:ro
 
 modules:
@@ -47,22 +47,22 @@ modules:
         url: https://www.lua.org/ftp/lua-5.4.7.tar.gz
         sha256: 9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30
 
-  - name: trad-rainmeter
+  - name: trad-desktop
     buildsystem: simple
     build-commands:
       - cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/app
       - cmake --build build -j${FLATPAK_BUILDER_N_JOBS}
       - install -Dm755 build/rainmeter-native /app/bin/rainmeter-native
       - install -Dm755 build/rmskin-unpacker /app/bin/rmskin-unpacker
-      - install -d /app/share/trad-rainmeter
-      - install -Dm755 launcher_gui.py /app/share/trad-rainmeter/launcher_gui.py
-      - cp -r assets suites widgets community gnome-extension /app/share/trad-rainmeter/
-      - printf '#!/bin/sh\nexec python3 /app/share/trad-rainmeter/launcher_gui.py "$@"\n' > /app/bin/trad-rainmeter-gui
-      - chmod 755 /app/bin/trad-rainmeter-gui
-      - install -Dm644 flatpak/com.github.kiddzhasi.TradRainmeter.desktop /app/share/applications/com.github.kiddzhasi.TradRainmeter.desktop
-      - install -Dm644 flatpak/com.github.kiddzhasi.TradRainmeter.metainfo.xml /app/share/metainfo/com.github.kiddzhasi.TradRainmeter.metainfo.xml
-      - install -Dm644 assets/trad-engine.png /app/share/icons/hicolor/512x512/apps/com.github.kiddzhasi.TradRainmeter.png
+      - install -d /app/share/trad-desktop
+      - install -Dm755 launcher_gui.py /app/share/trad-desktop/launcher_gui.py
+      - cp -r assets suites widgets community gnome-extension /app/share/trad-desktop/
+      - printf '#!/bin/sh\nexec python3 /app/share/trad-desktop/launcher_gui.py "$@"\n' > /app/bin/trad-desktop-gui
+      - chmod 755 /app/bin/trad-desktop-gui
+      - install -Dm644 flatpak/com.github.kiddzhasi.TradDesktop.desktop /app/share/applications/com.github.kiddzhasi.TradDesktop.desktop
+      - install -Dm644 flatpak/com.github.kiddzhasi.TradDesktop.metainfo.xml /app/share/metainfo/com.github.kiddzhasi.TradDesktop.metainfo.xml
+      - install -Dm644 assets/trad-engine.svg /app/share/icons/hicolor/scalable/apps/com.github.kiddzhasi.TradDesktop.svg
+      - install -Dm644 assets/trad-engine.png /app/share/icons/hicolor/512x512/apps/com.github.kiddzhasi.TradDesktop.png
     sources:
-      - type: archive
-        url: https://github.com/KidDzhasi/rainmeter-native-linux/archive/refs/tags/v1.1.0.tar.gz
-        sha256: 9f76abf52933492875b3ee8dd2389689909ba8fa31c7636c41fddacbff5d4ef2
+      - type: dir
+        path: ..

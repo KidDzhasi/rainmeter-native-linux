@@ -231,7 +231,13 @@ BangResult CommandProcessor::execute(const std::string &bangString,
           }
       }
       if (!std::filesystem::exists(guiPath, ec)) {
-          if (std::filesystem::exists("/app/share/trad-rainmeter/launcher_gui.py", ec)) {
+          if (std::filesystem::exists("/app/share/trad-desktop/launcher_gui.py", ec)) {
+              guiPath = "/app/share/trad-desktop/launcher_gui.py";
+          } else if (std::filesystem::exists("/usr/share/trad-desktop/launcher_gui.py", ec)) {
+              guiPath = "/usr/share/trad-desktop/launcher_gui.py";
+          } else if (std::filesystem::exists("/opt/trad-desktop/launcher_gui.py", ec)) {
+              guiPath = "/opt/trad-desktop/launcher_gui.py";
+          } else if (std::filesystem::exists("/app/share/trad-rainmeter/launcher_gui.py", ec)) {
               guiPath = "/app/share/trad-rainmeter/launcher_gui.py";
           } else if (std::filesystem::exists("/usr/share/trad-rainmeter/launcher_gui.py", ec)) {
               guiPath = "/usr/share/trad-rainmeter/launcher_gui.py";

@@ -5,22 +5,22 @@ import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
-export default class TradRainmeterPreferences extends ExtensionPreferences {
+export default class TradDesktopPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
         const page = new Adw.PreferencesPage({
-            title: 'Trad Rainmeter',
+            title: 'Trad Desktop',
             icon_name: 'preferences-desktop-wallpaper-symbolic',
         });
         window.add(page);
 
         const group = new Adw.PreferencesGroup({
-            title: 'Trad Rainmeter Control Center',
+            title: 'Trad Desktop Control Center',
             description: 'Manage desktop suites, Basic Widgets shapes & themes, Music Players, and Audio Visualizers.',
         });
         page.add(group);
 
         const launchRow = new Adw.ActionRow({
-            title: 'Launch Trad Rainmeter Control Center',
+            title: 'Launch Trad Desktop Control Center',
             subtitle: 'Open the full GTK4 / Libadwaita studio to customize widgets, themes, shapes, and positions.',
         });
 
@@ -33,9 +33,9 @@ export default class TradRainmeterPreferences extends ExtensionPreferences {
         launchBtn.connect('clicked', () => {
             const home = GLib.get_home_dir();
             const candidates = [
-                '/usr/share/trad-rainmeter/launcher_gui.py',
-                '/opt/trad-rainmeter/launcher_gui.py',
-                GLib.build_filenamev([home, 'Documents', 'GitHub', 'Trad-rainmeter', 'launcher_gui.py']),
+                '/usr/share/trad-desktop/launcher_gui.py',
+                '/opt/trad-desktop/launcher_gui.py',
+                GLib.build_filenamev([home, 'Documents', 'GitHub', 'Trad-Desktop', 'launcher_gui.py']),
                 GLib.build_filenamev([home, 'Documents', 'GitHub', 'rainmeter-native-linux', 'launcher_gui.py']),
             ];
             for (const scriptPath of candidates) {
