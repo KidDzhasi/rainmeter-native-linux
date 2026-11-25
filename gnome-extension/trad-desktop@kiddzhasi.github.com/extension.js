@@ -90,6 +90,16 @@ class TradDesktopIndicator extends PanelMenu.Button {
 });
 
 export default class TradDesktopExtension extends Extension {
+    _isTradWidgetWindow(window) {
+        const wmClass = (window.get_wm_class && window.get_wm_class()) || '';
+        const wmInstance = (window.get_wm_class_instance && window.get_wm_class_instance()) || '';
+        const gtkAppId = (window.get_gtk_application_id && window.get_gtk_application_id()) || '';
+        return wmClass === 'rainmeter-native-widget' ||
+               wmInstance === 'rainmeter-native-widget' ||
+               wmClass === 'trad-desktop-widget' ||
+               gtkAppId === 'rainmeter-native-widget';
+    }
+
     enable() {
         this._indicator = new TradDesktopIndicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
@@ -98,7 +108,7 @@ export default class TradDesktopExtension extends Extension {
             let attempts = 0;
             GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
                 attempts++;
-                if (window.get_wm_class && window.get_wm_class() === 'rainmeter-native-widget') {
+                if (this._isTradWidgetWindow(window)) {
                     this._pinWidgetToDesktop(window);
                     return GLib.SOURCE_REMOVE;
                 }
@@ -106,7 +116,7 @@ export default class TradDesktopExtension extends Extension {
             });
         });
         global.display.list_all_windows().forEach(window => {
-            if (window.get_wm_class && window.get_wm_class() === 'rainmeter-native-widget') {
+            if (this._isTradWidgetWindow(window)) {
                 this._pinWidgetToDesktop(window);
             }
         });

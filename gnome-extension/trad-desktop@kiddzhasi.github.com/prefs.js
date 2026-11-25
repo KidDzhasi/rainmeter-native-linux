@@ -14,10 +14,16 @@ export default class TradDesktopPreferences extends ExtensionPreferences {
         window.add(page);
 
         const group = new Adw.PreferencesGroup({
-            title: 'Trad Desktop Control Center',
-            description: 'Manage desktop suites, Basic Widgets shapes & themes, Music Players, and Audio Visualizers.',
+            title: 'Trad Desktop Control Center & Built-in Pinner',
+            description: 'Automatically pins Trad Desktop widgets to your desktop background (stick, below all windows) and manages suites, themes, shapes, weather, and audio visualizers.',
         });
         page.add(group);
+
+        const pinnerRow = new Adw.ActionRow({
+            title: 'Built-in Desktop Widget Pinner',
+            subtitle: 'Active — automatically strips decorations and pins Trad Desktop widgets below all windows on all workspaces.',
+        });
+        group.add(pinnerRow);
 
         const launchRow = new Adw.ActionRow({
             title: 'Launch Trad Desktop Control Center',
