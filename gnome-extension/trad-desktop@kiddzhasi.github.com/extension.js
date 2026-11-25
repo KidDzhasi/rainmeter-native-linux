@@ -93,12 +93,50 @@ export default class TradDesktopExtension extends Extension {
     enable() {
         this._indicator = new TradDesktopIndicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
+
+        this._windowCreatedId = global.display.connect('window-created', (_display, window) => {
+            let attempts = 0;
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+                attempts++;
+                if (window.get_wm_class && window.get_wm_class() === 'rainmeter-native-widget') {
+                    this._pinWidgetToDesktop(window);
+                    return GLib.SOURCE_REMOVE;
+                }
+                return attempts < 20 ? GLib.SOURCE_CONTINUE : GLib.SOURCE_REMOVE;
+            });
+        });
+        global.display.list_all_windows().forEach(window => {
+            if (window.get_wm_class && window.get_wm_class() === 'rainmeter-native-widget') {
+                this._pinWidgetToDesktop(window);
+            }
+        });
     }
 
     disable() {
+        if (this._windowCreatedId) {
+            global.display.disconnect(this._windowCreatedId);
+            this._windowCreatedId = null;
+        }
         if (this._indicator) {
             this._indicator.destroy();
             this._indicator = null;
+        }
+    }
+
+    _pinWidgetToDesktop(window) {
+        try {
+            if (window.decorated) {
+                window.decorated = false;
+            }
+        } catch (e) {
+            console.warn('[Trad Desktop] Failed to strip decoration:', e);
+        }
+
+        try {
+            window.stick();
+            window.make_below();
+        } catch (e) {
+            console.warn('[Trad Desktop] Failed to pin below:', e);
         }
     }
 }
