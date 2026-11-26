@@ -75,3 +75,13 @@ bool SkinManager::HandleGlobalEvents() {
   }
   return !skins_.empty();
 }
+
+double SkinManager::MinUpdateIntervalMs() const {
+  double minMs = 250.0;
+  for (const auto &skin : skins_) {
+    if (skin && skin->IsActive()) {
+      minMs = std::min(minMs, skin->GetUpdateIntervalMs());
+    }
+  }
+  return std::clamp(minMs, 25.0, 250.0);
+}

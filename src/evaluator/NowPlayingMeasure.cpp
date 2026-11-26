@@ -326,7 +326,9 @@ void NowPlayingBackend::workerThread() {
             currentTrack_ = info;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        // Back off D-Bus polling when no media is actively playing to save CPU on low-end PCs
+        const int sleepMs = (info.state == 1) ? 1000 : (activePlayer.empty() ? 2500 : 1500);
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
     }
 
     g_object_unref(conn);

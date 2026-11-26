@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "evaluator/CommandProcessor.hpp"
@@ -62,6 +63,7 @@ public:
   bool IsActive() const;
   bool NeedsUpdate() const;
   bool NeedsRedraw() const;
+  double GetUpdateIntervalMs() const { return updateIntervalMs_; }
   void ClearUpdateFlag();
   
   static std::string resolveVariables(const IniLexer &skin,
@@ -126,4 +128,8 @@ private:
   double userScale_ = 0.0;
   double effectiveScale_ = 1.0;
   bool autoFit_ = false;
+  double updateIntervalMs_ = 1000.0;
+  double updateElapsedMs_ = 1000.0;
+  std::size_t lastStateHash_ = 0;
+  std::unordered_map<std::string, std::string> imagePathCache_;
 };

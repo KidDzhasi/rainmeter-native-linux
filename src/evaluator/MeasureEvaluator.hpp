@@ -83,6 +83,9 @@ public:
   // Tick all active ActionTimers with the render thread delta time.
   void tickActionTimers(double dtMs, std::function<void(const std::string&)> fireBang);
 
+  // Fast state fingerprint of all measures for dirty-checking redraws.
+  std::size_t stateHash() const;
+
   std::size_t count() const noexcept { return measures_.size(); }
 
   // Expose to LegacyMeasure

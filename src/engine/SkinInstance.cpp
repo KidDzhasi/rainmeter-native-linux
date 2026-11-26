@@ -4,6 +4,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <thread>
 
 #include <linux/input-event-codes.h>
 
@@ -398,7 +399,17 @@ void SkinInstance::paintScene() {
       }
 
     } else if (type == "Image") {
-      const std::string path = resolveImagePath(skin_, &measures_, section, iniPath_);
+      std::string rawImgKey = skin_.getOr(section, "ImageName", "") + "|" +
+                              skin_.getOr(section, "MeasureName", "");
+      std::string resolvedKey = resolveVariables(skin_, &measures_, section, rawImgKey);
+      std::string path;
+      auto cacheIt = imagePathCache_.find(section + "::" + resolvedKey);
+      if (cacheIt != imagePathCache_.end()) {
+        path = cacheIt->second;
+      } else {
+        path = resolveImagePath(skin_, &measures_, section, iniPath_);
+        imagePathCache_.emplace(section + "::" + resolvedKey, path);
+      }
       if (!path.empty()) {
         int preserveAspectRatio = static_cast<int>(
             resolveNum(skin_, &measures_, *math_, section, "PreserveAspectRatio", 0.0));
@@ -733,6 +744,28 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &rawIniPath, 
   }
   inst->autoFit_ = (autoFitStr == "1" || autoFitStr == "true" || autoFitStr == "True");
 
+  // Parse per-skin Update interval (ms) and check LowEndMode (auto-enabled on <=2 cores unless disabled)
+  double rawUpdateMs = inst->math_->evaluateOr(
+      getKeyCI(inst->skin_, "Rainmeter", "Update"), 1000.0);
+  if (rawUpdateMs <= 0.0) {
+    rawUpdateMs = 1000.0;
+  }
+  std::string lowEndStr = globalConfig.getOr("Rainmeter", "LowEndMode", "");
+  bool lowEndMode = (lowEndStr == "1" || lowEndStr == "true" || lowEndStr == "True") ||
+                    (lowEndStr.empty() && std::thread::hardware_concurrency() > 0 &&
+                     std::thread::hardware_concurrency() <= 2);
+  if (lowEndMode) {
+    if (rawUpdateMs < 55.0) {
+      rawUpdateMs = 55.0; // ~18 FPS eco visualizer rate for Celeron / dual-core iGPUs
+    } else if (rawUpdateMs >= 500.0 && rawUpdateMs < 1500.0) {
+      rawUpdateMs = 1500.0;
+    }
+  } else {
+    rawUpdateMs = std::max(25.0, rawUpdateMs);
+  }
+  inst->updateIntervalMs_ = rawUpdateMs;
+  inst->updateElapsedMs_ = rawUpdateMs;
+
   std::string scaleStr = globalConfig.getOr(
       configName, "Scale", getKeyCI(inst->skin_, "Rainmeter", "Scale"));
   if (!scaleStr.empty()) {
@@ -920,8 +953,10 @@ void SkinInstance::computeWindowPosition(int winW, int winH, int &outX,
 
 void SkinInstance::Update(double dtMs) {
   std::lock_guard<std::mutex> lock(stateMutex_);
-  
-  if (!g_InputState.pendingCommand.empty() && (g_InputState.skinInstance == nullptr || g_InputState.skinInstance == this)) {
+
+  bool hasPendingCmd = !g_InputState.pendingCommand.empty() &&
+                       (g_InputState.skinInstance == nullptr || g_InputState.skinInstance == this);
+  if (hasPendingCmd) {
       std::string cmd = g_InputState.pendingCommand;
       g_InputState.pendingCommand.clear();
       CommandProcessor::execute(cmd, skin_, measures_, this);
@@ -929,20 +964,40 @@ void SkinInstance::Update(double dtMs) {
       forceRedraw_ = true;
   }
 
-  measures_.evaluate(skin_, dtMs, [this](const std::string &bang) {
+  updateElapsedMs_ += dtMs;
+  if (!forceUpdate_ && updateElapsedMs_ < updateIntervalMs_) {
+    return;
+  }
+
+  const double evalDtMs = forceUpdate_ ? updateElapsedMs_ : std::max(dtMs, updateIntervalMs_);
+  if (updateIntervalMs_ > 0.0) {
+    updateElapsedMs_ = std::fmod(updateElapsedMs_, updateIntervalMs_);
+  } else {
+    updateElapsedMs_ = 0.0;
+  }
+
+  bool wasForced = forceUpdate_;
+  bool bangRedraw = false;
+  measures_.evaluate(skin_, evalDtMs, [this, &bangRedraw](const std::string &bang) {
     BangResult result = CommandProcessor::execute(bang, skin_, measures_, this);
     if (result.needsUpdate)
       forceUpdate_ = true;
-    if (result.needsRedraw)
+    if (result.needsRedraw) {
       forceRedraw_ = true;
+      bangRedraw = true;
+    }
     if (result.deactivateConfig)
       active_ = false;
   });
-  
+
   measures_.injectVariables(skin_);
-  
+
+  std::size_t newHash = measures_.stateHash();
+  if (wasForced || bangRedraw || newHash != lastStateHash_ || g_InputState.active) {
+    lastStateHash_ = newHash;
+    forceRedraw_ = true;
+  }
   forceUpdate_ = false;
-  forceRedraw_ = true;
 }
 
 void SkinInstance::Render(double dtMs) {

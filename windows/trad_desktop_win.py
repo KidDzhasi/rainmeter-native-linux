@@ -1330,9 +1330,31 @@ def get_active_monitors_for_skin(st, num_monitors=1):
     return [m_single]
 
 
-def save_global_config(skins, state, num_monitors=1):
+def read_low_end_mode():
+    default_low = (os.cpu_count() or 4) <= 2
+    if not os.path.isfile(GLOBAL_CONFIG):
+        return default_low
+    cp = configparser.ConfigParser(interpolation=None, strict=False)
+    cp.optionxform = str
+    try:
+        with open(GLOBAL_CONFIG, "r", encoding="utf-8", errors="ignore") as f:
+            cp.read_file(f)
+        if cp.has_section("Rainmeter") and cp.has_option("Rainmeter", "LowEndMode"):
+            return cp.get("Rainmeter", "LowEndMode").strip().lower() in ("1", "true", "yes")
+    except Exception:
+        pass
+    return default_low
+
+
+def save_global_config(skins, state, num_monitors=1, low_end_mode=None):
+    if low_end_mode is None:
+        low_end_mode = read_low_end_mode()
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    lines = ["; Rainmeter Native Global Configuration\n"]
+    lines = [
+        "; Rainmeter Native Global Configuration\n",
+        "[Rainmeter]\n",
+        f"LowEndMode={1 if low_end_mode else 0}\n\n",
+    ]
     for s in skins:
         key = s["key"]
         st = state.get(key)
@@ -1486,7 +1508,6 @@ class DesktopWidgetWindow:
     def redraw(self):
         if not self.win.winfo_exists():
             return
-        self._pin_to_desktop_bottom()
         c = self.canvas
         c.delete("all")
 
@@ -1869,6 +1890,7 @@ class TradDesktopWindowsApp:
         self.engine_running = True
         self.selected_key = next((s["key"] for s in self.skins if not s["is_suite"]), self.skins[0]["key"] if self.skins else None)
         self.keep_other_monitors_active = False
+        self.low_end_mode = read_low_end_mode()
         self.suite_monitor_idx = 0
         self._detect_active_custom_suite()
         for s in self.skins:
@@ -2129,9 +2151,17 @@ class TradDesktopWindowsApp:
             mon_card,
             "Keep Other Monitor's Widgets Active (Multi-Monitor Pinning)",
             "Enable to place different suites or widgets on 1st and 2nd monitor without clearing the other monitor",
-            is_last=True,
+            is_last=False,
         )
         PillSwitch(right2, initial=self.keep_other_monitors_active, command=lambda val: setattr(self, "keep_other_monitors_active", bool(val))).pack()
+
+        _r3, right3, _lt3, _ls3 = self._make_row(
+            mon_card,
+            "Low-End PC / Celeron Performance Mode (Eco FPS & CPU Saver)",
+            "Optimizes frame pacing and throttles background telemetry sensors for smooth performance on Celeron & dual-core PCs",
+            is_last=True,
+        )
+        PillSwitch(right3, initial=self.low_end_mode, command=self._on_low_end_toggled).pack()
 
         # Group 2: Built-in and Saved Custom Suites
         suites_card = self._make_group(
@@ -3387,11 +3417,21 @@ class TradDesktopWindowsApp:
         except Exception as e:
             messagebox.showerror("Export Failed", str(e))
 
+    def _on_low_end_toggled(self, val):
+        self.low_end_mode = bool(val)
+        save_global_config(self.skins, self.skin_state, len(self.monitors), self.low_end_mode)
+        self._show_toast(
+            "Enabled Low-End PC / Celeron Performance Mode"
+            if self.low_end_mode
+            else "Disabled Low-End PC / Celeron Performance Mode"
+        )
+
     def _schedule_tick(self):
         self.telemetry.update_telemetry()
         for w in self.active_desktop_windows:
             w.redraw()
-        self.root.after(1000, self._schedule_tick)
+        interval_ms = 2000 if getattr(self, "low_end_mode", False) else 1000
+        self.root.after(interval_ms, self._schedule_tick)
 
 
 def main():

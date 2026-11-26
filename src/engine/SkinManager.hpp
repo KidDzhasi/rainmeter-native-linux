@@ -44,6 +44,9 @@ public:
   // Number of currently active skin instances.
   std::size_t ActiveCount() const { return skins_.size(); }
 
+  // Minimum update interval (ms) across active skins, used for adaptive sleep.
+  double MinUpdateIntervalMs() const;
+
 private:
   std::vector<std::unique_ptr<SkinInstance>> skins_;
 };

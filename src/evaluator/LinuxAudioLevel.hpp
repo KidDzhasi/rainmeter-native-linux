@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <complex>
 #include <thread>
 #include <mutex>
 #include <atomic>
@@ -50,6 +51,9 @@ private:
     // Audio backend (Parent only)
     std::vector<double> bandValues_;
     std::vector<double> targetBandValues_;
+    std::vector<float> hanningWindow_;
+    std::vector<int> bandBoundaries_;
+    std::vector<std::complex<float>> fftBuffer_;
     double rmsValue_ = 0.0;
     double targetRmsValue_ = 0.0;
     

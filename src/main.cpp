@@ -173,7 +173,6 @@ int main(int argc, char **argv) {
 
   std::thread renderThread([&manager, &running]() {
     auto lastFrameTime = std::chrono::steady_clock::now();
-    constexpr auto frameDuration = std::chrono::milliseconds(16);
 
     while (running) {
       auto now = std::chrono::steady_clock::now();
@@ -185,7 +184,9 @@ int main(int argc, char **argv) {
       manager.UpdateAll(dt);
       manager.RenderAll(dt);
 
-      std::this_thread::sleep_until(now + frameDuration);
+      const int sleepMs = static_cast<int>(
+          std::clamp(manager.MinUpdateIntervalMs(), 25.0, 100.0));
+      std::this_thread::sleep_until(now + std::chrono::milliseconds(sleepMs));
     }
   });
 
@@ -197,7 +198,7 @@ int main(int argc, char **argv) {
     double dtMs = std::chrono::duration<double, std::milli>(now - lastLoopTime).count();
     lastLoopTime = now;
 
-    if (now - lastTokenCheck >= std::chrono::milliseconds(150)) {
+    if (now - lastTokenCheck >= std::chrono::milliseconds(500)) {
       lastTokenCheck = now;
       std::ifstream tf(tokenPath);
       std::string currentToken;
@@ -213,7 +214,7 @@ int main(int argc, char **argv) {
       break;
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
   }
 
   running = false;

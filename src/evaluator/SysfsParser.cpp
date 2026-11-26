@@ -19,9 +19,18 @@ SysfsParser::SysfsParser() {
 }
 
 void SysfsParser::update() {
-    updateCpu();
-    updateMemory();
-    updateHwmon();
+    const auto now = std::chrono::steady_clock::now();
+    if (lastFastPoll_.time_since_epoch().count() == 0 ||
+        now - lastFastPoll_ >= std::chrono::milliseconds(500)) {
+        lastFastPoll_ = now;
+        updateCpu();
+        updateMemory();
+    }
+    if (lastHwmonPoll_.time_since_epoch().count() == 0 ||
+        now - lastHwmonPoll_ >= std::chrono::milliseconds(2000)) {
+        lastHwmonPoll_ = now;
+        updateHwmon();
+    }
 }
 
 void SysfsParser::scanHwmon() {

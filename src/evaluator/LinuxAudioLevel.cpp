@@ -17,27 +17,36 @@ namespace {
         return out;
     }
     
-    // Basic Cooley-Tukey FFT (recursive)
-    void fft(std::vector<std::complex<float>>& a) {
-        int n = a.size();
+    // Zero-allocation in-place iterative Cooley-Tukey radix-2 FFT
+    void fftInPlace(std::vector<std::complex<float>>& a) {
+        const int n = static_cast<int>(a.size());
         if (n <= 1) return;
-        
-        std::vector<std::complex<float>> a0(n/2), a1(n/2);
-        for (int i = 0; 2*i < n; i++) {
-            a0[i] = a[2*i];
-            a1[i] = a[2*i+1];
+
+        for (int i = 1, j = 0; i < n; ++i) {
+            int bit = n >> 1;
+            for (; j & bit; bit >>= 1) {
+                j ^= bit;
+            }
+            j ^= bit;
+            if (i < j) {
+                std::swap(a[i], a[j]);
+            }
         }
-        
-        fft(a0);
-        fft(a1);
-        
-        float angle = -2 * M_PI / n;
-        std::complex<float> w(1), wn(std::cos(angle), std::sin(angle));
-        
-        for (int i = 0; 2*i < n; i++) {
-            a[i] = a0[i] + w * a1[i];
-            a[i + n/2] = a0[i] - w * a1[i];
-            w *= wn;
+
+        for (int len = 2; len <= n; len <<= 1) {
+            const float angle = -2.0f * static_cast<float>(M_PI) / static_cast<float>(len);
+            const std::complex<float> wlen(std::cos(angle), std::sin(angle));
+            const int half = len >> 1;
+            for (int i = 0; i < n; i += len) {
+                std::complex<float> w(1.0f, 0.0f);
+                for (int j = 0; j < half; ++j) {
+                    const std::complex<float> u = a[i + j];
+                    const std::complex<float> v = a[i + j + half] * w;
+                    a[i + j] = u + v;
+                    a[i + j + half] = u - v;
+                    w *= wlen;
+                }
+            }
         }
     }
 }
@@ -84,7 +93,29 @@ void LinuxAudioLevel::loadFrom(const IniLexer& skin, const std::string& section)
         
         bandValues_.resize(bands_, 0.0);
         targetBandValues_.resize(bands_, 0.0);
-        
+        fftBuffer_.resize(fftSize_);
+
+        hanningWindow_.resize(fftSize_);
+        for (int i = 0; i < fftSize_; ++i) {
+            hanningWindow_[i] = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * i / std::max(1, fftSize_ - 1)));
+        }
+
+        const double sampleRate = 44100.0;
+        const double logMin = std::log10(20.0);
+        const double logMax = std::log10(16000.0);
+        const int maxBin = fftSize_ / 2;
+        bandBoundaries_.resize(bands_ + 1);
+        for (int b = 0; b <= bands_; ++b) {
+            double currentLog = logMin + b * (logMax - logMin) / std::max(1, bands_);
+            double currentFreq = std::pow(10.0, currentLog);
+            bandBoundaries_[b] = std::clamp(static_cast<int>(std::round(currentFreq * fftSize_ / sampleRate)), 0, maxBin);
+        }
+        for (int b = 1; b <= bands_; ++b) {
+            if (bandBoundaries_[b] <= bandBoundaries_[b - 1]) {
+                bandBoundaries_[b] = std::min(maxBin, bandBoundaries_[b - 1] + 1);
+            }
+        }
+
         // Start capture thread
         running_ = true;
         captureThread_ = std::thread(&LinuxAudioLevel::captureLoop, this);
@@ -132,99 +163,62 @@ void LinuxAudioLevel::captureLoop() {
 }
 
 void LinuxAudioLevel::computeFFT(const std::vector<float>& pcm) {
-    // 1. Calculate RMS
-    double sum = 0;
-    for(float v : pcm) sum += v * v;
-    double rmsLinear = std::sqrt(sum / pcm.size());
-    
+    // 1. Calculate RMS and fast-exit on silence to save CPU on low-end / Celeron systems
+    double sum = 0.0;
+    for (float v : pcm) sum += static_cast<double>(v) * v;
+    double rmsLinear = std::sqrt(sum / std::max<std::size_t>(1, pcm.size()));
+
+    if (rmsLinear < 1.5e-5) {
+        std::lock_guard<std::mutex> lock(dataMutex_);
+        targetRmsValue_ = 0.0;
+        std::fill(targetBandValues_.begin(), targetBandValues_.end(), 0.0);
+        return;
+    }
+
     // Convert to dB
     double rmsDb = 20.0 * std::log10(rmsLinear + 1e-9);
-    
+
     // Dynamic Range Headroom for musical spectrum visualization
-    double floorDb = -54.0;
-    double ceilingDb = -6.0;
-    
+    const double floorDb = -54.0;
+    const double ceilingDb = -6.0;
+
     double currentRms = (rmsDb - floorDb) / (ceilingDb - floorDb);
     currentRms = std::clamp(currentRms, 0.0, 1.0);
     currentRms = std::pow(currentRms, 1.5) * (sensitivity_ / 35.0);
     currentRms = std::clamp(currentRms, 0.0, 1.0);
-    
-    // 2. Perform FFT
-    std::vector<std::complex<float>> data(fftSize_);
-    for(int i = 0; i < fftSize_; i++) {
-        // Hanning window
-        float multiplier = 0.5f * (1.0f - std::cos(2.0f * M_PI * i / (fftSize_ - 1)));
-        data[i] = std::complex<float>(pcm[i] * multiplier, 0);
+
+    // 2. Perform in-place FFT using pre-allocated buffer & pre-computed Hanning window
+    for (int i = 0; i < fftSize_; ++i) {
+        fftBuffer_[i] = std::complex<float>(pcm[i] * hanningWindow_[i], 0.0f);
     }
-    
-    fft(data);
-    
-    // 3. Process into bands (Logarithmic Frequency Binning)
-    std::vector<double> currentBands(bands_, 0.0);
-    
-    double sampleRate = 44100.0;
-    double minFreq = 20.0;
-    double maxFreq = 16000.0;
-    
-    double logMin = std::log10(minFreq);
-    double logMax = std::log10(maxFreq);
-    
-    std::vector<int> bandBoundaries(bands_ + 1);
-    for(int b = 0; b <= bands_; b++) {
-        double currentLog = logMin + b * (logMax - logMin) / bands_;
-        double currentFreq = std::pow(10.0, currentLog);
-        bandBoundaries[b] = std::max(0, std::min((int)(fftSize_ / 2), (int)std::round(currentFreq * fftSize_ / sampleRate)));
-    }
-    
-    // Ensure monotonically increasing boundaries to prevent empty bands
-    for(int b = 1; b <= bands_; b++) {
-        if(bandBoundaries[b] <= bandBoundaries[b - 1]) {
-            bandBoundaries[b] = bandBoundaries[b - 1] + 1;
-        }
-    }
-    
-    // Cap boundaries to maxBin
-    int maxBin = fftSize_ / 2;
-    for(int b = 0; b <= bands_; b++) {
-        if(bandBoundaries[b] > maxBin) bandBoundaries[b] = maxBin;
-    }
-    
-    for(int b = 0; b < bands_; b++) {
-        double bandSum = 0;
-        int startBin = bandBoundaries[b];
-        int endBin = bandBoundaries[b + 1];
-        int count = 0;
-        
-        for(int i = startBin; i < endBin; i++) {
-            bandSum += std::abs(data[i]);
-            count++;
-        }
-        
-        double magnitude = count > 0 ? (bandSum / count) : 0.0;
-        
-        // Normalize linear amplitude by FFT size
-        magnitude = magnitude / (fftSize_ / 2.0);
-        
-        // Convert to dB for natural dynamic range
-        double db = 20.0 * std::log10(magnitude + 1e-9);
-        double normalized = std::clamp((db - floorDb) / (ceilingDb - floorDb), 0.0, 1.0);
-        
-        // Apply power curve so quiet harmonics don't peg the bars at 100%
-        normalized = std::pow(normalized, 1.65);
-        
-        // Mild high-frequency tilt compensation
-        double freqWeight = 0.85 + (static_cast<double>(b) / std::max(1, bands_)) * 0.55;
-        normalized *= freqWeight * (sensitivity_ / 35.0);
-        
-        // Clamp strictly at the end
-        currentBands[b] = std::clamp(normalized, 0.0, 1.0);
-    }
-    
-    // 4. Update Targets safely
+
+    fftInPlace(fftBuffer_);
+
+    // 3. Process into bands using pre-computed logarithmic frequency bin boundaries
     std::lock_guard<std::mutex> lock(dataMutex_);
     targetRmsValue_ = currentRms;
-    for(int b = 0; b < bands_; b++) {
-        targetBandValues_[b] = currentBands[b];
+    const double invHalfFft = 2.0 / static_cast<double>(fftSize_);
+    const double invDbSpan = 1.0 / (ceilingDb - floorDb);
+    const double sensScale = sensitivity_ / 35.0;
+
+    for (int b = 0; b < bands_; ++b) {
+        double bandSum = 0.0;
+        const int startBin = bandBoundaries_[b];
+        const int endBin = bandBoundaries_[b + 1];
+        const int count = endBin - startBin;
+
+        for (int i = startBin; i < endBin; ++i) {
+            bandSum += std::abs(fftBuffer_[i]);
+        }
+
+        double magnitude = (count > 0) ? (bandSum / count) * invHalfFft : 0.0;
+        double db = 20.0 * std::log10(magnitude + 1e-9);
+        double normalized = std::clamp((db - floorDb) * invDbSpan, 0.0, 1.0);
+        normalized = std::pow(normalized, 1.65);
+
+        double freqWeight = 0.85 + (static_cast<double>(b) / std::max(1, bands_)) * 0.55;
+        normalized *= freqWeight * sensScale;
+        targetBandValues_[b] = std::clamp(normalized, 0.0, 1.0);
     }
 }
 
@@ -234,18 +228,24 @@ void LinuxAudioLevel::update(double dtMs) {
         
         // Exponential dt smoothing for RMS
         if (targetRmsValue_ > rmsValue_) {
-            rmsValue_ += (targetRmsValue_ - rmsValue_) * (dtMs / std::max(1.0, attack_));
+            rmsValue_ += (targetRmsValue_ - rmsValue_) * std::min(1.0, dtMs / std::max(1.0, attack_));
         } else {
-            rmsValue_ -= (rmsValue_ - targetRmsValue_) * (dtMs / std::max(1.0, decay_));
+            rmsValue_ -= (rmsValue_ - targetRmsValue_) * std::min(1.0, dtMs / std::max(1.0, decay_));
+        }
+        if (rmsValue_ < 0.001 && targetRmsValue_ == 0.0) {
+            rmsValue_ = 0.0;
         }
         rmsValue_ = std::clamp(rmsValue_, 0.0, 1.0);
         
         // Exponential dt smoothing for Bands
         for(int b = 0; b < bands_; b++) {
             if (targetBandValues_[b] > bandValues_[b]) {
-                bandValues_[b] += (targetBandValues_[b] - bandValues_[b]) * (dtMs / std::max(1.0, attack_));
+                bandValues_[b] += (targetBandValues_[b] - bandValues_[b]) * std::min(1.0, dtMs / std::max(1.0, attack_));
             } else {
-                bandValues_[b] -= (bandValues_[b] - targetBandValues_[b]) * (dtMs / std::max(1.0, decay_));
+                bandValues_[b] -= (bandValues_[b] - targetBandValues_[b]) * std::min(1.0, dtMs / std::max(1.0, decay_));
+            }
+            if (bandValues_[b] < 0.001 && targetBandValues_[b] == 0.0) {
+                bandValues_[b] = 0.0;
             }
             bandValues_[b] = std::clamp(bandValues_[b], 0.0, 1.0);
         }

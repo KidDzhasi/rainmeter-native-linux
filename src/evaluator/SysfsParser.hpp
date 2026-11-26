@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -49,4 +50,7 @@ private:
     double memTotal_ = 0.0;
     double memUsed_ = 0.0;
     double memUsedPercent_ = 0.0;
+
+    std::chrono::steady_clock::time_point lastFastPoll_{};
+    std::chrono::steady_clock::time_point lastHwmonPoll_{};
 };

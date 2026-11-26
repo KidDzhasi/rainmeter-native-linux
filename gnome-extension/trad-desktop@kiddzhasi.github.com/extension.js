@@ -105,14 +105,35 @@ export default class TradDesktopExtension extends Extension {
         Main.panel.addToStatusArea(this.uuid, this._indicator);
 
         this._windowCreatedId = global.display.connect('window-created', (_display, window) => {
-            let attempts = 0;
-            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
-                attempts++;
+            if (this._isTradWidgetWindow(window)) {
+                this._pinWidgetToDesktop(window);
+                return;
+            }
+            const existingClass = (window.get_wm_class && window.get_wm_class()) || '';
+            if (existingClass && existingClass !== 'rainmeter-native-widget' && existingClass !== 'trad-desktop-widget') {
+                return;
+            }
+            let wmClassSignalId = 0;
+            if (window.connect) {
+                wmClassSignalId = window.connect('notify::wm-class', () => {
+                    if (this._isTradWidgetWindow(window)) {
+                        this._pinWidgetToDesktop(window);
+                    }
+                    if (wmClassSignalId) {
+                        try { window.disconnect(wmClassSignalId); } catch (_e) {}
+                        wmClassSignalId = 0;
+                    }
+                });
+            }
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 180, () => {
+                if (wmClassSignalId) {
+                    try { window.disconnect(wmClassSignalId); } catch (_e) {}
+                    wmClassSignalId = 0;
+                }
                 if (this._isTradWidgetWindow(window)) {
                     this._pinWidgetToDesktop(window);
-                    return GLib.SOURCE_REMOVE;
                 }
-                return attempts < 20 ? GLib.SOURCE_CONTINUE : GLib.SOURCE_REMOVE;
+                return GLib.SOURCE_REMOVE;
             });
         });
         global.display.list_all_windows().forEach(window => {

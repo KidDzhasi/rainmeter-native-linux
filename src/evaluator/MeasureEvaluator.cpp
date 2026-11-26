@@ -689,3 +689,18 @@ void MeasureEvaluator::tickActionTimers(double dtMs, std::function<void(const st
         }
     }
 }
+
+std::size_t MeasureEvaluator::stateHash() const {
+    std::size_t h = 14695981039346656037ULL;
+    auto mix = [&h](std::size_t v) {
+        h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    };
+    std::hash<std::string> strHasher;
+    for (const auto& [name, m] : measures_) {
+        mix(strHasher(name));
+        mix(strHasher(m->getString()));
+        mix(static_cast<std::size_t>(std::llround(m->getNumeric() * 500.0)));
+        mix(static_cast<std::size_t>(std::llround(m->getPercent() * 500.0)));
+    }
+    return h;
+}

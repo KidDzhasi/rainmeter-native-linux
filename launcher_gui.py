@@ -2722,10 +2722,27 @@ AntiAlias=1
 
 
 
-def get_engine_pids():
-    """Find all running (non-zombie) rainmeter-native PIDs via /proc."""
-    pids = []
+def get_engine_pids(fast=False):
+    """Find running (non-zombie) rainmeter-native PIDs. Uses O(1) engine.token lookup when fast=True."""
     my_pid = os.getpid()
+    if fast:
+        token_file = os.path.join(CONFIG_DIR, "engine.token")
+        if os.path.isfile(token_file):
+            try:
+                with open(token_file, "r", encoding="utf-8", errors="ignore") as tf:
+                    tok = tf.read().strip()
+                if "-" in tok:
+                    t_pid = int(tok.rsplit("-", 1)[1])
+                    if t_pid != my_pid and os.path.exists(f"/proc/{t_pid}/stat"):
+                        with open(f"/proc/{t_pid}/stat", "r", encoding="utf-8", errors="ignore") as sf:
+                            st_str = sf.read()
+                        rp = st_str.rfind(")")
+                        if rp != -1 and len(st_str) > rp + 2 and st_str[rp + 2] not in ("Z", "X"):
+                            return [t_pid]
+            except Exception:
+                pass
+
+    pids = []
     try:
         for entry in os.listdir("/proc"):
             if not entry.isdigit():
@@ -3203,15 +3220,39 @@ def get_active_monitors_for_skin(st, num_monitors=1):
     return [m_single]
 
 
-def save_global_config(skins, state, num_monitors=None):
+def read_low_end_mode():
+    """Return True if LowEndMode is enabled in Rainmeter.ini (defaults to True on <= 2 CPU cores)."""
+    default_low = (os.cpu_count() or 4) <= 2
+    if not os.path.isfile(GLOBAL_CONFIG):
+        return default_low
+    cp = configparser.ConfigParser(interpolation=None, strict=False)
+    cp.optionxform = str
+    try:
+        with open(GLOBAL_CONFIG, "r", encoding="utf-8", errors="ignore") as f:
+            cp.read_file(f)
+        if cp.has_section("Rainmeter") and cp.has_option("Rainmeter", "LowEndMode"):
+            val = cp.get("Rainmeter", "LowEndMode").strip().lower()
+            return val in ("1", "true", "yes")
+    except Exception:
+        pass
+    return default_low
+
+
+def save_global_config(skins, state, num_monitors=None, low_end_mode=None):
     """Write ~/.config/rainmeter-native/Rainmeter.ini from current UI state (including per-monitor @0/@1 sections)."""
     if num_monitors is None:
         try:
             num_monitors = max(1, len(detect_monitors()))
         except Exception:
             num_monitors = 1
+    if low_end_mode is None:
+        low_end_mode = read_low_end_mode()
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    lines = ["; Rainmeter Native Global Configuration\n"]
+    lines = [
+        "; Rainmeter Native Global Configuration\n",
+        "[Rainmeter]\n",
+        f"LowEndMode={1 if low_end_mode else 0}\n\n",
+    ]
     for s in skins:
         key = s["key"]
         st = state.get(key)
@@ -3292,6 +3333,7 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         self.selected_key = first_widget or (self.skins[0]["key"] if self.skins else None)
         self.show_suites_in_widgets_tab = False
         self.keep_other_monitors_active = False
+        self.low_end_mode = read_low_end_mode()
         self.suite_monitor_idx = 0
         self._detect_active_custom_suite()
         for s in self.skins:
@@ -3318,7 +3360,7 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         if self.selected_key:
             self._select_widget(self.selected_key)
         self._update_engine_status()
-        GLib.timeout_add_seconds(2, self._update_engine_status)
+        GLib.timeout_add_seconds(3, self._update_engine_status)
 
     def _build_ui(self):
         self.toast_overlay = Adw.ToastOverlay()
@@ -3415,6 +3457,17 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         )
         indep_mon_row.add_suffix(self.keep_other_monitors_switch)
         suite_mon_group.add(indep_mon_row)
+
+        low_end_row = Adw.ActionRow(
+            title="Low-End PC / Celeron Performance Mode (Eco FPS & CPU Saver)",
+            subtitle="Optimizes frame pacing, throttles background sensors, and pauses visualizer redraws during silence for smooth performance on Celeron & dual-core PCs",
+        )
+        self.low_end_switch = Gtk.Switch()
+        self.low_end_switch.set_valign(Gtk.Align.CENTER)
+        self.low_end_switch.set_active(self.low_end_mode)
+        self.low_end_switch.connect("notify::active", self._on_low_end_mode_toggled)
+        low_end_row.add_suffix(self.low_end_switch)
+        suite_mon_group.add(low_end_row)
 
         self.suites_list_group = Adw.PreferencesGroup(
             title="Built-in and Saved Custom Suites",
@@ -5410,6 +5463,19 @@ class ControlCenterWindow(Adw.ApplicationWindow):
 
         GLib.idle_add(_do_refresh)
 
+    def _on_low_end_mode_toggled(self, sw, _pspec):
+        if self._updating_controls:
+            return
+        self.low_end_mode = sw.get_active()
+        save_global_config(self.skins, self.skin_state, len(self.monitors), self.low_end_mode)
+        if get_engine_pids(fast=True):
+            self._launch_active_items()
+        self._show_toast(
+            "Enabled Low-End PC / Celeron Performance Mode"
+            if self.low_end_mode
+            else "Disabled Low-End PC / Celeron Performance Mode"
+        )
+
     def _on_apply_and_launch(self, _btn):
         if self.selected_key and not any(self.skin_state[s["key"]]["active"] for s in self.skins):
             self.skin_state[self.selected_key]["active"] = True
@@ -5418,7 +5484,7 @@ class ControlCenterWindow(Adw.ApplicationWindow):
 
     def _launch_active_items(self):
         active_skins = [s for s in self.skins if self.skin_state[s["key"]]["active"]]
-        save_global_config(self.skins, self.skin_state, len(self.monitors))
+        save_global_config(self.skins, self.skin_state, len(self.monitors), self.low_end_mode)
         stop_engine()
 
         if not active_skins:
@@ -5476,7 +5542,7 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         win.present()
 
     def _update_engine_status(self):
-        pids = get_engine_pids()
+        pids = get_engine_pids(fast=True)
         if pids:
             self.status_label.set_label(f"● Running (PID {', '.join(str(p) for p in pids)})")
         else:
