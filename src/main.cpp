@@ -167,39 +167,25 @@ int main(int argc, char **argv) {
                "Ctrl+C to exit.\n";
 
   // -----------------------------------------------------------------------
-  // Daemon loop: render thread + main-thread tick / event dispatch.
+  // Unified high-precision frame-paced daemon loop:
+  // Running X11/Wayland event dispatch, measure evaluation, and non-blocking
+  // EGL rendering (eglSwapInterval=0) on a single high-precision clock thread
+  // eliminates Xlib Display* mutex contention between XPending() and
+  // eglSwapBuffers(), preventing multi-monitor compositor stalls when windows
+  // or apps are active on another screen.
   // -----------------------------------------------------------------------
-  std::atomic<bool> running{true};
-
-  std::thread renderThread([&manager, &running]() {
-    auto lastFrameTime = std::chrono::steady_clock::now();
-
-    while (running) {
-      auto now = std::chrono::steady_clock::now();
-      double dt =
-          std::chrono::duration<double, std::milli>(now - lastFrameTime)
-              .count();
-      lastFrameTime = now;
-
-      manager.UpdateAll(dt);
-      manager.RenderAll(dt);
-
-      const int sleepMs = static_cast<int>(
-          std::clamp(manager.MinUpdateIntervalMs(), 25.0, 100.0));
-      std::this_thread::sleep_until(now + std::chrono::milliseconds(sleepMs));
-    }
-  });
-
-  auto lastLoopTime = std::chrono::steady_clock::now();
-  auto lastTokenCheck = lastLoopTime;
+  auto lastFrameTime = std::chrono::steady_clock::now();
+  auto lastTokenCheck = lastFrameTime;
 
   while (manager.ActiveCount() > 0) {
-    auto now = std::chrono::steady_clock::now();
-    double dtMs = std::chrono::duration<double, std::milli>(now - lastLoopTime).count();
-    lastLoopTime = now;
+    const auto frameStart = std::chrono::steady_clock::now();
+    const double dtMs =
+        std::chrono::duration<double, std::milli>(frameStart - lastFrameTime)
+            .count();
+    lastFrameTime = frameStart;
 
-    if (now - lastTokenCheck >= std::chrono::milliseconds(500)) {
-      lastTokenCheck = now;
+    if (frameStart - lastTokenCheck >= std::chrono::milliseconds(500)) {
+      lastTokenCheck = frameStart;
       std::ifstream tf(tokenPath);
       std::string currentToken;
       if (!tf.is_open() || !(tf >> currentToken) ||
@@ -209,17 +195,22 @@ int main(int argc, char **argv) {
     }
 
     manager.UpdateAnimations(dtMs);
-
     if (!manager.HandleGlobalEvents()) {
       break;
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(25));
-  }
+    manager.UpdateAll(dtMs);
+    manager.RenderAll(dtMs);
 
-  running = false;
-  if (renderThread.joinable()) {
-    renderThread.join();
+    const int sleepMs = static_cast<int>(
+        std::clamp(manager.MinUpdateIntervalMs(), 16.0, 100.0));
+    const auto nextTarget = frameStart + std::chrono::milliseconds(sleepMs);
+    const auto afterWork = std::chrono::steady_clock::now();
+    if (nextTarget > afterWork) {
+      std::this_thread::sleep_until(nextTarget);
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
   }
 
   return 0;

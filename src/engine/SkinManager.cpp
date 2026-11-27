@@ -83,5 +83,5 @@ double SkinManager::MinUpdateIntervalMs() const {
       minMs = std::min(minMs, skin->GetUpdateIntervalMs());
     }
   }
-  return std::clamp(minMs, 25.0, 250.0);
+  return std::clamp(minMs, 16.0, 250.0);
 }

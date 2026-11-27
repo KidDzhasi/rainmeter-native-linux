@@ -17,9 +17,9 @@ using Color = Utils::Color;
 void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathParser *math, NanoVGRenderer &renderer, const std::string &section, double x, double y, double w, double h, double& curWidth, double& curHeight) {
     if (!renderer.valid()) return;
 
-    // 1. Multi-Shape Parsing: Extract up to Shape64 into an ordered list
+    // 1. Multi-Shape Parsing: Extract up to Shape128 into an ordered list
     std::vector<std::string> parsedShapes;
-    for (int i = 1; i <= 64; ++i) {
+    for (int i = 1; i <= 128; ++i) {
         std::string key = (i == 1) ? "Shape" : "Shape" + std::to_string(i);
         std::string rawShapeDef = skin.getOr(section, key, "");
         if (rawShapeDef.empty()) {
@@ -54,6 +54,9 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
             static_cast<unsigned char>(c.a)
         ); 
     };
+
+    double maxX = 0.0;
+    double maxY = 0.0;
 
     // 2. Sequential Rendering: Iterate through the parsed shape definitions
     for (const std::string& shapeDef : parsedShapes) {
@@ -130,32 +133,32 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
             } else if (mod.find("Fill LinearGradient") == 0) {
                 std::string gradDef = mod.substr(19);
                 while (!gradDef.empty() && std::isspace(static_cast<unsigned char>(gradDef.front()))) gradDef.erase(0, 1);
-                std::vector<std::string> gp;
-                std::size_t p0 = 0;
-                while (p0 < gradDef.size()) {
-                    std::size_t p1 = gradDef.find('|', p0);
-                    if (p1 == std::string::npos) p1 = gradDef.size();
-                    std::string gpart = gradDef.substr(p0, p1 - p0);
-                    while (!gpart.empty() && std::isspace(static_cast<unsigned char>(gpart.front()))) gpart.erase(0, 1);
-                    while (!gpart.empty() && std::isspace(static_cast<unsigned char>(gpart.back()))) gpart.pop_back();
-                    if (!gpart.empty()) gp.push_back(gpart);
-                    p0 = p1 + 1;
+                hasLinearGrad = true;
+                hasFill = true;
+                gradAngle = math->evaluateOr(gradDef, 0.0);
+
+                auto parseColorStop = [](const std::string& str) {
+                    std::size_t semi = str.find(';');
+                    std::string colorStr = (semi == std::string::npos) ? str : str.substr(0, semi);
+                    while (!colorStr.empty() && std::isspace(static_cast<unsigned char>(colorStr.front()))) colorStr.erase(0, 1);
+                    while (!colorStr.empty() && std::isspace(static_cast<unsigned char>(colorStr.back()))) colorStr.pop_back();
+                    return Utils::ParseColor(colorStr);
+                };
+
+                std::vector<Color> stops;
+                while (j + 1 < parts.size()) {
+                    std::string nextPart = parts[j + 1];
+                    while (!nextPart.empty() && std::isspace(static_cast<unsigned char>(nextPart.front()))) nextPart.erase(0, 1);
+                    if (!nextPart.empty() && (std::isdigit(static_cast<unsigned char>(nextPart.front())) || nextPart.front() == '#')) {
+                        stops.push_back(parseColorStop(nextPart));
+                        ++j;
+                    } else {
+                        break;
+                    }
                 }
-                if (gp.size() >= 3) {
-                    hasLinearGrad = true;
-                    hasFill = true;
-                    gradAngle = math->evaluateOr(gp[0], 0.0);
-                    
-                    auto parseColorStop = [](const std::string& str) {
-                        std::size_t semi = str.find(';');
-                        std::string colorStr = (semi == std::string::npos) ? str : str.substr(0, semi);
-                        while (!colorStr.empty() && std::isspace(static_cast<unsigned char>(colorStr.front()))) colorStr.erase(0, 1);
-                        while (!colorStr.empty() && std::isspace(static_cast<unsigned char>(colorStr.back()))) colorStr.pop_back();
-                        return Utils::ParseColor(colorStr);
-                    };
-                    
-                    gradStart = parseColorStop(gp[1]);
-                    gradEnd = parseColorStop(gp.back());
+                if (!stops.empty()) {
+                    gradStart = stops.front();
+                    gradEnd = stops.back();
                 }
             }
         }
@@ -164,6 +167,8 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
             hasFill = true;
         }
 
+        double localX0 = 0.0;
+        double localY0 = 0.0;
         double localW = 0.0;
         double localH = 0.0;
 
@@ -179,8 +184,10 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
             if (radius > 0) nvgRoundedRect(vg, sx, sy, sw, sh, radius);
             else nvgRect(vg, sx, sy, sw, sh);
             
-            localW = args[0] + sw;
-            localH = args[1] + sh;
+            localX0 = sx;
+            localY0 = sy;
+            localW = sx + sw;
+            localH = sy + sh;
             
         } else if (shapeType == "Ellipse" && args.size() >= 3) {
             double cx = args[0];
@@ -192,8 +199,10 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
             nvgBeginPath(vg);
             nvgEllipse(vg, cx, cy, rx, ry);
             
-            localW = args[0] + rx;
-            localH = args[1] + ry;
+            localX0 = cx - rx;
+            localY0 = cy - ry;
+            localW = cx + rx;
+            localH = cy + ry;
             
         } else if (shapeType == "Arc" && args.size() >= 5) {
             double cx = args[0];
@@ -207,6 +216,8 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
             } else if (std::abs(sweepRad) > 0.001) {
                 nvgArc(vg, cx, cy, r, startRad, startRad + sweepRad, sweepRad >= 0 ? NVG_CW : NVG_CCW);
             }
+            localX0 = cx - r;
+            localY0 = cy - r;
             localW = cx + r;
             localH = cy + r;
             
@@ -218,17 +229,23 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
             nvgBeginPath(vg);
             nvgMoveTo(vg, x1, y1);
             nvgLineTo(vg, x2, y2);
+            localX0 = std::min(x1, x2);
+            localY0 = std::min(y1, y2);
             localW = std::max({localW, x1, x2});
             localH = std::max({localH, y1, y2});
             
         } else if (shapeType == "Polygon" && args.size() >= 2) {
             nvgBeginPath(vg);
             nvgMoveTo(vg, args[0], args[1]);
+            localX0 = args[0];
+            localY0 = args[1];
             localW = std::max(localW, args[0]);
             localH = std::max(localH, args[1]);
             
             for (size_t i = 2; i + 1 < args.size(); i += 2) {
                 nvgLineTo(vg, args[i], args[i+1]);
+                localX0 = std::min(localX0, args[i]);
+                localY0 = std::min(localY0, args[i+1]);
                 localW = std::max(localW, args[i]);
                 localH = std::max(localH, args[i+1]);
             }
@@ -241,7 +258,9 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
                     part.find("Extend") == 0 || part.find("Rotate") == 0 || 
                     part.find("Scale") == 0 || part.find("Skew") == 0 || 
                     part.find("Offset") == 0 || part.find("Matrix") == 0) {
-                    continue;
+                    // Once an attribute modifier starts (including Fill LinearGradient color stop tokens),
+                    // stop reading polygon vertex segments!
+                    break;
                 }
                 
                 std::vector<double> vargs;
@@ -254,10 +273,14 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
                     ps = pe + 1;
                 }
                 
-                for (size_t i = 0; i + 1 < vargs.size(); i += 2) {
-                    nvgLineTo(vg, vargs[i], vargs[i+1]);
-                    localW = std::max(localW, vargs[i]);
-                    localH = std::max(localH, vargs[i+1]);
+                if (vargs.size() >= 2 && (vargs.size() % 2 == 0)) {
+                    for (size_t i = 0; i + 1 < vargs.size(); i += 2) {
+                        nvgLineTo(vg, vargs[i], vargs[i+1]);
+                        localX0 = std::min(localX0, vargs[i]);
+                        localY0 = std::min(localY0, vargs[i+1]);
+                        localW = std::max(localW, vargs[i]);
+                        localH = std::max(localH, vargs[i+1]);
+                    }
                 }
             }
             
@@ -329,11 +352,13 @@ void ShapeMeter::Render(const IniLexer &skin, MeasureEvaluator *measures, MathPa
         if (hasFill && shapeType != "Line" && shapeType != "Arc") {
             if (hasLinearGrad) {
                 float angle_rad = gradAngle * (M_PI / 180.0f);
-                float cx = localW / 2.0f;
-                float cy = localH / 2.0f;
+                float spanW = std::max(1.0, localW - localX0);
+                float spanH = std::max(1.0, localH - localY0);
+                float cx = static_cast<float>(localX0) + spanW * 0.5f;
+                float cy = static_cast<float>(localY0) + spanH * 0.5f;
                 
-                float L = std::abs(localW * std::cos(angle_rad)) + std::abs(localH * std::sin(angle_rad));
-                if (L < 1.0f) L = std::max(localW, localH);
+                float L = std::abs(spanW * std::cos(angle_rad)) + std::abs(spanH * std::sin(angle_rad));
+                if (L < 1.0f) L = std::max(spanW, spanH);
 
                 float gsx = cx - (L * 0.5f) * std::cos(angle_rad);
                 float gsy = cy - (L * 0.5f) * std::sin(angle_rad);

@@ -69,6 +69,49 @@ enum class Type {
     Unknown, Time, Cpu, PhysicalMemory, SwapMemory, FreeDiskSpace, NetIn, NetOut, Uptime, Calc, WebParser, Plugin, Script, ActionTimerType, UsageMonitorType, CoreTempType, HwInfoType, AudioLevelType, PowerPluginType, InputTextType
 };
 
+struct SharedNetRate {
+    std::mutex mtx;
+    sysmeasure::NetStats prev;
+    std::chrono::steady_clock::time_point lastSample{};
+    double rxBytesPerSec = 0.0;
+    double txBytesPerSec = 0.0;
+    bool initialized = false;
+
+    void pollIfDue() {
+        std::lock_guard<std::mutex> lock(mtx);
+        auto now = std::chrono::steady_clock::now();
+        if (!initialized) {
+            prev = sysmeasure::readNetStats("");
+            lastSample = now;
+            initialized = true;
+            return;
+        }
+        double elapsedSec = std::chrono::duration<double>(now - lastSample).count();
+        if (elapsedSec >= 0.45) {
+            sysmeasure::NetStats cur = sysmeasure::readNetStats("");
+            if (prev.valid && cur.valid) {
+                double rawRx = (cur.rxBytes >= prev.rxBytes)
+                                   ? (static_cast<double>(cur.rxBytes - prev.rxBytes) / elapsedSec)
+                                   : 0.0;
+                double rawTx = (cur.txBytes >= prev.txBytes)
+                                   ? (static_cast<double>(cur.txBytes - prev.txBytes) / elapsedSec)
+                                   : 0.0;
+                rxBytesPerSec = rxBytesPerSec * 0.35 + rawRx * 0.65;
+                txBytesPerSec = txBytesPerSec * 0.35 + rawTx * 0.65;
+                if (rxBytesPerSec < 25.0) rxBytesPerSec = 0.0;
+                if (txBytesPerSec < 25.0) txBytesPerSec = 0.0;
+            }
+            prev = cur;
+            lastSample = now;
+        }
+    }
+};
+
+static SharedNetRate& getSharedNetRate() {
+    static SharedNetRate instance;
+    return instance;
+}
+
 struct LegacyMeasureState {
     Type type = Type::Unknown;
     std::string format;
@@ -360,22 +403,9 @@ void LegacyMeasure::update(const IniLexer& skin, double dtMs, std::function<void
     }
 
     case Type::NetIn: {
-      state_.updateTimer += dtMs;
-      if (state_.dynamicVariables) {
-        state_.interfaceName = resolveVariables(skin, skin.getOr(name_, "Interface", ""));
-      }
-      if (state_.updateTimer >= 1000.0) {
-          state_.updateTimer = std::fmod(state_.updateTimer, 1000.0);
-          sysmeasure::NetStats cur = sysmeasure::readNetStats(state_.interfaceName);
-          if (state_.prevNet.valid && cur.valid) {
-            state_.targetNumeric = static_cast<double>(cur.rxBytes - state_.prevNet.rxBytes);
-          } else {
-            state_.targetNumeric = 0.0;
-          }
-          state_.prevNet = cur;
-      }
-      state_.numeric += (state_.targetNumeric - state_.numeric) * (dtMs / 100.0);
-      state_.current = std::to_string(static_cast<long long>(state_.numeric));
+      getSharedNetRate().pollIfDue();
+      state_.numeric = getSharedNetRate().rxBytesPerSec;
+      state_.current = formatDouble(state_.numeric);
       {
         double maxVal = (state_.maxValue > 1.0) ? state_.maxValue : 1048576.0;
         state_.percent = std::clamp(state_.numeric / maxVal, 0.0, 1.0);
@@ -384,22 +414,9 @@ void LegacyMeasure::update(const IniLexer& skin, double dtMs, std::function<void
     }
 
     case Type::NetOut: {
-      state_.updateTimer += dtMs;
-      if (state_.dynamicVariables) {
-        state_.interfaceName = resolveVariables(skin, skin.getOr(name_, "Interface", ""));
-      }
-      if (state_.updateTimer >= 1000.0) {
-          state_.updateTimer = std::fmod(state_.updateTimer, 1000.0);
-          sysmeasure::NetStats cur = sysmeasure::readNetStats(state_.interfaceName);
-          if (state_.prevNet.valid && cur.valid) {
-            state_.targetNumeric = static_cast<double>(cur.txBytes - state_.prevNet.txBytes);
-          } else {
-            state_.targetNumeric = 0.0;
-          }
-          state_.prevNet = cur;
-      }
-      state_.numeric += (state_.targetNumeric - state_.numeric) * (dtMs / 100.0);
-      state_.current = std::to_string(static_cast<long long>(state_.numeric));
+      getSharedNetRate().pollIfDue();
+      state_.numeric = getSharedNetRate().txBytesPerSec;
+      state_.current = formatDouble(state_.numeric);
       {
         double maxVal = (state_.maxValue > 1.0) ? state_.maxValue : 1048576.0;
         state_.percent = std::clamp(state_.numeric / maxVal, 0.0, 1.0);
@@ -575,6 +592,7 @@ void LegacyMeasure::update(const IniLexer& skin, double dtMs, std::function<void
 
 void MeasureEvaluator::loadFrom(const IniLexer &skin) {
   measures_.clear();
+  measureOrder_.clear();
   for (const std::string &section : skin.sectionOrder()) {
     auto dataIt = skin.data().find(section);
     if (dataIt == skin.data().end()) continue;
@@ -607,8 +625,9 @@ void MeasureEvaluator::loadFrom(const IniLexer &skin) {
     
     measure->loadFrom(skin, section);
     measures_.emplace(section, measure);
+    measureOrder_.push_back(section);
   }
-  evaluate(skin, 1000.0);
+  evaluate(skin, 16.0);
 }
 
 void MeasureEvaluator::injectVariables(IniLexer &skin) const {
@@ -627,8 +646,11 @@ void MeasureEvaluator::evaluate(const IniLexer &skin, double dtMs, std::function
     return numericValue(meas);
   });
 
-  for (auto &[name, m] : measures_) {
-      m->update(skin, dtMs, executeBangs);
+  for (const std::string &name : measureOrder_) {
+      auto it = measures_.find(name);
+      if (it != measures_.end()) {
+          it->second->update(skin, dtMs, executeBangs);
+      }
   }
 }
 
@@ -696,11 +718,14 @@ std::size_t MeasureEvaluator::stateHash() const {
         h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     };
     std::hash<std::string> strHasher;
-    for (const auto& [name, m] : measures_) {
+    for (const std::string &name : measureOrder_) {
+        auto it = measures_.find(name);
+        if (it == measures_.end()) continue;
+        const auto &m = it->second;
         mix(strHasher(name));
         mix(strHasher(m->getString()));
-        mix(static_cast<std::size_t>(std::llround(m->getNumeric() * 500.0)));
-        mix(static_cast<std::size_t>(std::llround(m->getPercent() * 500.0)));
+        mix(static_cast<std::size_t>(std::llround(m->getNumeric() * 2000.0)));
+        mix(static_cast<std::size_t>(std::llround(m->getPercent() * 2000.0)));
     }
     return h;
 }

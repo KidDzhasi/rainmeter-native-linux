@@ -398,9 +398,29 @@ void SkinInstance::paintScene() {
           actualY -= (curHeight / 2.0);
       }
 
+      // If the text is rotated (e.g. Angle=-27 on diagonal blades), expand its clickable
+      // axis-aligned bounding box around its anchor so clicking anywhere on the rotated blade/label hits it.
+      if (std::abs(angle) > 0.01) {
+          double rad = (std::abs(angle) > 6.283185) ? (angle * (M_PI / 180.0)) : angle;
+          double c = std::abs(std::cos(rad));
+          double s = std::abs(std::sin(rad));
+          double rotW = curWidth * c + curHeight * s + 16.0;
+          double rotH = curWidth * s + curHeight * c + 12.0;
+          double cx = actualX + curWidth * 0.5;
+          double cy = actualY + curHeight * 0.5;
+          actualX = cx - rotW * 0.5;
+          actualY = cy - rotH * 0.5;
+          curWidth = rotW;
+          curHeight = rotH;
+      }
+
     } else if (type == "Image") {
-      std::string rawImgKey = skin_.getOr(section, "ImageName", "") + "|" +
-                              skin_.getOr(section, "MeasureName", "");
+      std::string rawImgName = skin_.getOr(section, "ImageName", "");
+      std::string mName = skin_.getOr(section, "MeasureName", "");
+      std::string mVal = (!mName.empty() && measures_.hasMeasure(mName))
+                             ? measures_.value(mName)
+                             : "";
+      std::string rawImgKey = rawImgName + "|" + mName + "|" + mVal;
       std::string resolvedKey = resolveVariables(skin_, &measures_, section, rawImgKey);
       std::string path;
       auto cacheIt = imagePathCache_.find(section + "::" + resolvedKey);
@@ -410,6 +430,7 @@ void SkinInstance::paintScene() {
         path = resolveImagePath(skin_, &measures_, section, iniPath_);
         imagePathCache_.emplace(section + "::" + resolvedKey, path);
       }
+      bool drewImg = false;
       if (!path.empty()) {
         int preserveAspectRatio = static_cast<int>(
             resolveNum(skin_, &measures_, *math_, section, "PreserveAspectRatio", 0.0));
@@ -418,8 +439,10 @@ void SkinInstance::paintScene() {
         if (im.success) {
           curWidth = im.width;
           curHeight = im.height;
+          drewImg = true;
         }
-      } else {
+      }
+      if (!drewImg) {
         curWidth = w > 0 ? w : 32;
         curHeight = h > 0 ? h : 32;
         Color fillColor = {0, 0, 0, 0};
@@ -433,7 +456,7 @@ void SkinInstance::paintScene() {
         if (fillColor.a > 0.0) {
           Color emptyStroke = {0, 0, 0, 0};
           renderer_.drawRectangle(x, y, curWidth, curHeight, cornerRadius, fillColor, emptyStroke, 0.0);
-        } else {
+        } else if (mName.empty()) {
           renderer_.strokeRect(x, y, curWidth, curHeight, 1.0, textColor);
         }
       }
@@ -578,14 +601,18 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &rawIniPath, 
     return nullptr;
   }
 
-  // Apply user-writable Theme.inc and Weather.inc overrides (essential for read-only /usr/share APT installs)
+  // Apply user-writable Theme.inc and Weather.inc overrides to both widgets and suites
   std::string userThemeInc = Utils::ResolvePath("~/.config/rainmeter-native/Theme.inc");
-  if (fs::exists(userThemeInc) && (iniPath.find("widgets/") != std::string::npos || iniPath.find("/widgets/") != std::string::npos)) {
+  if (fs::exists(userThemeInc)) {
     inst->skin_.parseFile(userThemeInc, false);
   }
   std::string userWeatherInc = Utils::ResolvePath("~/.config/rainmeter-native/Weather.inc");
   if (fs::exists(userWeatherInc)) {
     inst->skin_.parseFile(userWeatherInc, false);
+  }
+  std::string userNotesInc = Utils::ResolvePath("~/.config/rainmeter-native/Notes.inc");
+  if (fs::exists(userNotesInc)) {
+    inst->skin_.parseFile(userNotesInc, false);
   }
 
   inst->measures_.loadFrom(inst->skin_);
@@ -655,16 +682,17 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &rawIniPath, 
             }
 
             if (!actionString.empty()) {
-              size_t pos = actionString.find("$MouseX:%$");
+              std::string resolvedAction = resolveVariables(raw->skin_, &raw->measures_, it->section, actionString);
+              size_t pos = resolvedAction.find("$MouseX:%$");
               if (pos != std::string::npos) {
-                  double percent = ((sx - it->x) / it->w) * 100.0;
-                  actionString.replace(pos, 10, std::to_string(percent));
+                  double percent = ((sx - it->x) / std::max(1.0, it->w)) * 100.0;
+                  resolvedAction.replace(pos, 10, std::to_string(percent));
               }
               
-              std::cout << "[Click Zone] Triggered " << actionName << " on " << it->section << ": " << actionString << std::endl;
+              std::cout << "[Click Zone] Triggered " << actionName << " on " << it->section << ": " << resolvedAction << std::endl;
               
               // External commands (http:// or standard shell actions) are handled securely inside execute()
-              BangResult res = CommandProcessor::execute(actionString, raw->skin_,
+              BangResult res = CommandProcessor::execute(resolvedAction, raw->skin_,
                                                         raw->measures_, raw);
               if (res.needsUpdate)
                 raw->forceUpdate_ = true;
@@ -754,14 +782,12 @@ std::unique_ptr<SkinInstance> SkinInstance::Load(const std::string &rawIniPath, 
   bool lowEndMode = (lowEndStr == "1" || lowEndStr == "true" || lowEndStr == "True") ||
                     (lowEndStr.empty() && std::thread::hardware_concurrency() > 0 &&
                      std::thread::hardware_concurrency() <= 2);
-  if (lowEndMode) {
-    if (rawUpdateMs < 55.0) {
-      rawUpdateMs = 55.0; // ~18 FPS eco visualizer rate for Celeron / dual-core iGPUs
-    } else if (rawUpdateMs >= 500.0 && rawUpdateMs < 1500.0) {
-      rawUpdateMs = 1500.0;
-    }
-  } else {
-    rawUpdateMs = std::max(25.0, rawUpdateMs);
+  if (rawUpdateMs <= 50.0) {
+    // Fast-animating skin (e.g. AudioHorizon / AudioVisualizer): run at smooth 60 FPS (16ms)
+    // or 33ms (~30 FPS) when Low-End Mode is enabled, while still pausing redraws during silence!
+    rawUpdateMs = lowEndMode ? 33.0 : 16.0;
+  } else if (lowEndMode && rawUpdateMs >= 500.0 && rawUpdateMs < 1500.0) {
+    rawUpdateMs = 1500.0;
   }
   inst->updateIntervalMs_ = rawUpdateMs;
   inst->updateElapsedMs_ = rawUpdateMs;
@@ -965,16 +991,13 @@ void SkinInstance::Update(double dtMs) {
   }
 
   updateElapsedMs_ += dtMs;
-  if (!forceUpdate_ && updateElapsedMs_ < updateIntervalMs_) {
+  // Use a 2.5ms tolerance for scheduler wakeup jitter so 16ms/33ms visualizer frames never skip every other tick
+  if (!forceUpdate_ && (updateElapsedMs_ + 2.5) < updateIntervalMs_) {
     return;
   }
 
-  const double evalDtMs = forceUpdate_ ? updateElapsedMs_ : std::max(dtMs, updateIntervalMs_);
-  if (updateIntervalMs_ > 0.0) {
-    updateElapsedMs_ = std::fmod(updateElapsedMs_, updateIntervalMs_);
-  } else {
-    updateElapsedMs_ = 0.0;
-  }
+  const double evalDtMs = std::clamp(updateElapsedMs_, 1.0, std::max(50.0, updateIntervalMs_ * 1.5));
+  updateElapsedMs_ = 0.0;
 
   bool wasForced = forceUpdate_;
   bool bangRedraw = false;

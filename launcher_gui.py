@@ -3459,8 +3459,8 @@ class ControlCenterWindow(Adw.ApplicationWindow):
         suite_mon_group.add(indep_mon_row)
 
         low_end_row = Adw.ActionRow(
-            title="Low-End PC / Celeron Performance Mode (Eco FPS & CPU Saver)",
-            subtitle="Optimizes frame pacing, throttles background sensors, and pauses visualizer redraws during silence for smooth performance on Celeron & dual-core PCs",
+            title="Low-End PC / Celeron Performance Mode (Eco FPS and CPU Saver)",
+            subtitle="Optimizes frame pacing, throttles background sensors, and pauses visualizer redraws during silence for smooth performance on Celeron and dual-core PCs",
         )
         self.low_end_switch = Gtk.Switch()
         self.low_end_switch.set_valign(Gtk.Align.CENTER)
@@ -4206,7 +4206,7 @@ class ControlCenterWindow(Adw.ApplicationWindow):
                 s["est_h"] = meta["height"]
 
         self.preview_area.queue_draw()
-        if any(self.skin_state[s["key"]]["active"] for s in self.skins if s.get("is_basic", False)):
+        if any(self.skin_state[s["key"]]["active"] for s in self.skins):
             self._launch_active_items()
         else:
             self._show_toast(toast_msg)
@@ -6168,6 +6168,237 @@ class WeatherPopupApp(Adw.Application):
         win.present()
 
 
+def load_sticky_notes():
+    """Load user sticky notes from ~/.config/rainmeter-native/Notes.inc or widgets/Notes.inc."""
+    paths = [
+        os.path.join(CONFIG_DIR, "Notes.inc"),
+        os.path.join(REPO_DIR, "widgets", "Notes.inc"),
+    ]
+    title = "Sticky Notes"
+    lines = [
+        "Don't forget to check your mail!",
+        "Click anywhere on Notes to write or edit.",
+        "Trad Desktop Native Linux Engine",
+    ]
+    for p in paths:
+        if os.path.isfile(p):
+            cp = configparser.ConfigParser(interpolation=None, strict=False)
+            cp.optionxform = str
+            try:
+                cp.read(p, encoding="utf-8")
+                if cp.has_section("Variables"):
+                    title = cp.get("Variables", "NoteTitle", fallback=title).strip() or title
+                    body_raw = cp.get("Variables", "NoteBody", fallback="").strip()
+                    if body_raw:
+                        lines = [ln for ln in body_raw.split("#CRLF#")]
+                    else:
+                        l1 = cp.get("Variables", "NoteLine1", fallback=lines[0])
+                        l2 = cp.get("Variables", "NoteLine2", fallback=lines[1])
+                        l3 = cp.get("Variables", "NoteLine3", fallback=lines[2])
+                        lines = [l1, l2, l3]
+                    break
+            except Exception:
+                pass
+    return title, "\n".join(lines)
+
+
+def save_sticky_notes(title, body_text):
+    """Persist sticky notes to both ~/.config/rainmeter-native/Notes.inc and widgets/Notes.inc."""
+    title = (title or "Sticky Notes").strip().replace("\n", " ")
+    raw_lines = [ln.rstrip("\r") for ln in (body_text or "").split("\n")]
+    if not raw_lines or all(not ln.strip() for ln in raw_lines):
+        raw_lines = ["(Empty note - click to write)"]
+    padded = (raw_lines + ["", "", "", ""])[:4]
+    crlf_body = "#CRLF#".join(raw_lines[:6])
+    content = (
+        "[Variables]\n"
+        f"NoteTitle={title}\n"
+        f"NoteLine1={padded[0]}\n"
+        f"NoteLine2={padded[1]}\n"
+        f"NoteLine3={padded[2]}\n"
+        f"NoteLine4={padded[3]}\n"
+        f"NoteBody={crlf_body}\n"
+    )
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    targets = [os.path.join(CONFIG_DIR, "Notes.inc")]
+    repo_notes = os.path.join(REPO_DIR, "widgets", "Notes.inc")
+    if os.access(os.path.dirname(repo_notes), os.W_OK):
+        targets.append(repo_notes)
+    for t in targets:
+        try:
+            with open(t, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception:
+            pass
+
+
+class StickyNotesWindow(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app)
+        self.set_title("Trad Desktop — Sticky Notes")
+        self.set_default_size(480, 400)
+
+        title_val, body_val = load_sticky_notes()
+
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_title_widget(Adw.WindowTitle(title="Sticky Notes", subtitle="Write & pin notes to your desktop"))
+
+        save_btn = Gtk.Button(label="Save to Desktop")
+        save_btn.add_css_class("suggested-action")
+        save_btn.connect("clicked", self._on_save)
+        header.pack_end(save_btn)
+        toolbar.add_top_bar(header)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+
+        title_group = Adw.PreferencesGroup(title="Note Header")
+        self.title_row = Adw.EntryRow(title="Title")
+        self.title_row.set_text(title_val)
+        title_group.add(self.title_row)
+        box.append(title_group)
+
+        lbl = Gtk.Label(label="Note Content (each line appears on your desktop sticky note)", xalign=0.0)
+        lbl.add_css_class("dim-label")
+        box.append(lbl)
+
+        frame = Gtk.Frame()
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        scroll.set_min_content_height(190)
+        self.text_view = Gtk.TextView()
+        self.text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.text_view.set_top_margin(12)
+        self.text_view.set_bottom_margin(12)
+        self.text_view.set_left_margin(12)
+        self.text_view.set_right_margin(12)
+        self.text_view.get_buffer().set_text(body_val)
+        scroll.set_child(self.text_view)
+        frame.set_child(scroll)
+        box.append(frame)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        btn_row.set_halign(Gtk.Align.END)
+
+        clear_btn = Gtk.Button(label="Clear")
+        clear_btn.connect("clicked", lambda _b: self.text_view.get_buffer().set_text(""))
+        btn_row.append(clear_btn)
+
+        save_close_btn = Gtk.Button(label="Save & Update Desktop")
+        save_close_btn.add_css_class("suggested-action")
+        save_close_btn.connect("clicked", self._on_save_and_close)
+        btn_row.append(save_close_btn)
+        box.append(btn_row)
+
+        toolbar.set_content(box)
+        self.set_content(toolbar)
+
+    def _save_now(self):
+        buf = self.text_view.get_buffer()
+        start, end = buf.get_bounds()
+        body = buf.get_text(start, end, True)
+        title = self.title_row.get_text().strip() or "Sticky Notes"
+        save_sticky_notes(title, body)
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--reload"],
+            cwd=REPO_DIR,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def _on_save(self, _btn):
+        self._save_now()
+
+    def _on_save_and_close(self, _btn):
+        self._save_now()
+        self.close()
+
+
+class StickyNotesApp(Adw.Application):
+    def __init__(self):
+        super().__init__(
+            application_id="com.github.kiddzhasi.TradDesktop.Notes",
+            flags=Gio.ApplicationFlags.NON_UNIQUE,
+        )
+
+    def do_activate(self):
+        style_mgr = Adw.StyleManager.get_default()
+        style_mgr.set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+        win = self.props.active_window
+        if not win:
+            win = StickyNotesWindow(self)
+        win.present()
+
+
+class CalendarPopupWindow(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app)
+        self.set_title("Trad Desktop — Calendar & Sticky Notes")
+        self.set_default_size(440, 460)
+
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_title_widget(Adw.WindowTitle(title="Calendar & Agenda", subtitle="Interactive Month View & Desktop Notes"))
+        notes_btn = Gtk.Button(label="Edit Sticky Notes")
+        notes_btn.add_css_class("suggested-action")
+        notes_btn.connect("clicked", self._on_open_notes)
+        header.pack_end(notes_btn)
+        toolbar.add_top_bar(header)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+
+        cal_card = Gtk.Frame()
+        self.calendar = Gtk.Calendar()
+        self.calendar.set_vexpand(True)
+        self.calendar.set_hexpand(True)
+        cal_card.set_child(self.calendar)
+        box.append(cal_card)
+
+        title_val, body_val = load_sticky_notes()
+        notes_grp = Adw.PreferencesGroup(title=title_val, description="Click 'Edit Sticky Notes' to write or update your desktop note")
+        for line in body_val.split("\n"):
+            if line.strip():
+                r = Adw.ActionRow(title=GLib.markup_escape_text(line.strip()))
+                notes_grp.add(r)
+        box.append(notes_grp)
+
+        toolbar.set_content(box)
+        self.set_content(toolbar)
+
+    def _on_open_notes(self, _btn):
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--notes-popup"],
+            cwd=REPO_DIR,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.close()
+
+
+class CalendarPopupApp(Adw.Application):
+    def __init__(self):
+        super().__init__(
+            application_id="com.github.kiddzhasi.TradDesktop.Calendar",
+            flags=Gio.ApplicationFlags.NON_UNIQUE,
+        )
+
+    def do_activate(self):
+        style_mgr = Adw.StyleManager.get_default()
+        style_mgr.set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+        win = self.props.active_window
+        if not win:
+            win = CalendarPopupWindow(self)
+        win.present()
+
+
 if __name__ == "__main__":
     if "--reload" in sys.argv:
         stop_engine()
@@ -6189,5 +6420,11 @@ if __name__ == "__main__":
     if "--weather-popup" in sys.argv:
         argv = [a for a in sys.argv if a != "--weather-popup"]
         sys.exit(WeatherPopupApp().run(argv))
+    if "--notes-popup" in sys.argv:
+        argv = [a for a in sys.argv if a != "--notes-popup"]
+        sys.exit(StickyNotesApp().run(argv))
+    if "--calendar-popup" in sys.argv:
+        argv = [a for a in sys.argv if a != "--calendar-popup"]
+        sys.exit(CalendarPopupApp().run(argv))
     app = RainmeterControlApp()
     sys.exit(app.run(sys.argv))

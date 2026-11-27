@@ -507,7 +507,8 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
     nvgTextAlign(vg_, nvgAlign);
 
     // ---------------------------------------------------------------
-    // STEP 2: Sanitise the display string.
+    // STEP 2: Sanitise the display string (expand #CRLF# and replace
+    // unsupported color emoji with universally rendered glyphs).
     // ---------------------------------------------------------------
     std::string textToDraw = text;
     auto replaceAll = [](std::string& str, const std::string& from, const std::string& to) {
@@ -517,19 +518,53 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
             start_pos += to.length();
         }
     };
-    replaceAll(textToDraw, "⏮", "<<");
-    replaceAll(textToDraw, "⏭", ">>");
+    replaceAll(textToDraw, "#CRLF#", "\n");
+    replaceAll(textToDraw, "#crlf#", "\n");
+    replaceAll(textToDraw, "\\n", "\n");
+    replaceAll(textToDraw, "⏮", "|<");
+    replaceAll(textToDraw, "⏭", ">|");
     replaceAll(textToDraw, "♥", "+");
     replaceAll(textToDraw, "♡", "+");
     replaceAll(textToDraw, "⏸", "||");
     replaceAll(textToDraw, "▶", ">");
     replaceAll(textToDraw, "⏵", ">");
     replaceAll(textToDraw, "■", "[]");
+    replaceAll(textToDraw, "🖥", "[PC]");
+    replaceAll(textToDraw, "📁", "[DIR]");
+    replaceAll(textToDraw, "📄", "[DOC]");
+    replaceAll(textToDraw, "🖼", "[IMG]");
+    replaceAll(textToDraw, "🎬", "[VID]");
+    replaceAll(textToDraw, "🌐", "[WEB]");
+    replaceAll(textToDraw, "🎧", "[AUD]");
+    replaceAll(textToDraw, "🔊", "[VOL]");
+    replaceAll(textToDraw, "🗑", "[BIN]");
+    replaceAll(textToDraw, "📡", "[NET]");
+    replaceAll(textToDraw, "🔒", "[LCK]");
+    replaceAll(textToDraw, "⛅", "*");
+    replaceAll(textToDraw, "🌧", "//");
+
+    // Split into lines so multi-line text (#CRLF# / \n) renders and measures properly
+    std::vector<std::string> lines;
+    {
+        std::size_t p0 = 0;
+        while (p0 <= textToDraw.size()) {
+            std::size_t nl = textToDraw.find('\n', p0);
+            if (nl == std::string::npos) {
+                lines.push_back(textToDraw.substr(p0));
+                break;
+            }
+            lines.push_back(textToDraw.substr(p0, nl - p0));
+            p0 = nl + 1;
+        }
+        if (lines.empty()) lines.push_back("");
+    }
+    const bool isMultiLine = (lines.size() > 1);
+    const float lineAdvance = pixelSize * 1.22f;
 
     // ---------------------------------------------------------------
     // STEP 3: Truncate if ClipString=1
     // ---------------------------------------------------------------
-    if (clipString == 1 && maxWidth > 0) {
+    if (clipString == 1 && maxWidth > 0 && !isMultiLine) {
         float bounds[4] = {0};
         nvgTextBounds(vg_, 0.0f, 0.0f, textToDraw.c_str(), nullptr, bounds);
         if (bounds[2] - bounds[0] > maxWidth) {
@@ -549,6 +584,7 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
                 }
             }
             if (textToDraw.empty()) textToDraw = ellipsis;
+            lines[0] = textToDraw;
         }
     }
 
@@ -558,6 +594,24 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
     float bounds[4] = {0, 0, 0, 0};
     if (clipString == 2 && maxWidth > 0) {
         nvgTextBoxBounds(vg_, 0.0f, 0.0f, maxWidth, textToDraw.c_str(), nullptr, bounds);
+    } else if (isMultiLine) {
+        float minX = 0.0f, maxX = 0.0f;
+        for (std::size_t li = 0; li < lines.size(); ++li) {
+            float lb[4] = {0, 0, 0, 0};
+            const char* s = lines[li].empty() ? " " : lines[li].c_str();
+            nvgTextBounds(vg_, 0.0f, static_cast<float>(li) * lineAdvance, s, nullptr, lb);
+            if (li == 0) {
+                minX = lb[0];
+                maxX = lb[2];
+                bounds[1] = lb[1];
+            } else {
+                minX = std::min(minX, lb[0]);
+                maxX = std::max(maxX, lb[2]);
+            }
+            bounds[3] = lb[3];
+        }
+        bounds[0] = minX;
+        bounds[2] = maxX;
     } else {
         nvgTextBounds(vg_, 0.0f, 0.0f, textToDraw.c_str(), nullptr, bounds);
     }
@@ -566,27 +620,40 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
     float measuredH = bounds[3] - bounds[1];
 
     if (measuredW < 1.0f) measuredW = pixelSize * static_cast<float>(textToDraw.size());
-    if (measuredH < 1.0f) measuredH = pixelSize;
+    if (measuredH < 1.0f) measuredH = isMultiLine ? (lineAdvance * lines.size()) : pixelSize;
     if (clipString == 2 && maxHeight > 0 && measuredH > maxHeight) measuredH = maxHeight;
 
     metrics.width  = measuredW;
     metrics.height = measuredH;
 
-    // Helper lambda for the shadow pass (since it needs an offset from the layout)
-    auto renderShadowPass = [&](float offset_x, float offset_y) {
-        nvgSave(vg_);
-        nvgTranslate(vg_, static_cast<float>(x) + offset_x, static_cast<float>(y) + offset_y);
-        if (angle != 0.0) nvgRotate(vg_, static_cast<float>(angle));
-
+    auto drawLinesOrText = [&]() {
         if (clipString == 2 && maxWidth > 0) {
             if (maxHeight > 0) {
                 nvgScissor(vg_, 0, 0, maxWidth, maxHeight);
             }
             nvgTextBox(vg_, 0, 0, maxWidth, textToDraw.c_str(), nullptr);
+        } else if (isMultiLine) {
+            for (std::size_t li = 0; li < lines.size(); ++li) {
+                if (!lines[li].empty()) {
+                    nvgText(vg_, 0.0f, static_cast<float>(li) * lineAdvance, lines[li].c_str(), nullptr);
+                }
+            }
         } else {
             nvgText(vg_, 0, 0, textToDraw.c_str(), nullptr);
         }
+    };
 
+    //Helper lambda for the shadow pass (since it needs an offset from the layout)
+    // Rainmeter specifies Angle in degrees if |angle| > 2*pi, or radians if small; support both cleanly.
+    const float angleRad = (std::abs(angle) > 6.283185)
+                               ? static_cast<float>(angle * (M_PI / 180.0))
+                               : static_cast<float>(angle);
+
+    auto renderShadowPass = [&](float offset_x, float offset_y) {
+        nvgSave(vg_);
+        nvgTranslate(vg_, static_cast<float>(x) + offset_x, static_cast<float>(y) + offset_y);
+        if (angle != 0.0) nvgRotate(vg_, angleRad);
+        drawLinesOrText();
         nvgRestore(vg_);
     };
 
@@ -603,7 +670,7 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
     // ---------------------------------------------------------------
     nvgSave(vg_);
     nvgTranslate(vg_, static_cast<float>(x), static_cast<float>(y));
-    if (angle != 0.0) nvgRotate(vg_, static_cast<float>(angle));
+    if (angle != 0.0) nvgRotate(vg_, angleRad);
 
     nvgBeginPath(vg_);
 
@@ -648,14 +715,7 @@ NanoVGRenderer::TextMetrics NanoVGRenderer::drawText(const std::string &text, do
         nvgFillColor(vg_, toNVGColor(color));
     }
 
-    if (clipString == 2 && maxWidth > 0) {
-        if (maxHeight > 0) {
-            nvgScissor(vg_, 0, 0, maxWidth, maxHeight);
-        }
-        nvgTextBox(vg_, 0, 0, maxWidth, textToDraw.c_str(), nullptr);
-    } else {
-        nvgText(vg_, 0, 0, textToDraw.c_str(), nullptr);
-    }
+    drawLinesOrText();
     
     nvgRestore(vg_);
 

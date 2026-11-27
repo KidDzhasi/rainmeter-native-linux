@@ -133,32 +133,45 @@ void LinuxAudioLevel::captureLoop() {
     ss.format = PA_SAMPLE_FLOAT32LE;
     ss.rate = 44100;
     ss.channels = 1;
-    
-    int error;
-    // Pass NULL for default recording device, which might be a mic. 
-    // Ideally we want the default sink monitor for loopback audio.
-    // PulseAudio has "@DEFAULT_SINK@.monitor", but some setups might just use NULL for the default input.
-    pa_ = pa_simple_new(NULL, "rainmeter", PA_STREAM_RECORD, "@DEFAULT_SINK@.monitor", "AudioLevel", &ss, NULL, NULL, &error);
+
+    const int hopSize = std::max(128, fftSize_ / 2); // 512 samples (~11.6 ms) 50% overlap hop
+    pa_buffer_attr bufAttr{};
+    bufAttr.maxlength = static_cast<uint32_t>(fftSize_ * sizeof(float) * 2);
+    bufAttr.tlength = static_cast<uint32_t>(-1);
+    bufAttr.prebuf = static_cast<uint32_t>(-1);
+    bufAttr.minreq = static_cast<uint32_t>(-1);
+    bufAttr.fragsize = static_cast<uint32_t>(hopSize * sizeof(float));
+
+    int error = 0;
+    pa_ = pa_simple_new(NULL, "trad-desktop", PA_STREAM_RECORD, "@DEFAULT_SINK@.monitor", "AudioLevel", &ss, NULL, &bufAttr, &error);
     if (!pa_) {
         std::cerr << "Failed to open @DEFAULT_SINK@.monitor, falling back to default source. Error: " << pa_strerror(error) << "\n";
-        pa_ = pa_simple_new(NULL, "rainmeter", PA_STREAM_RECORD, NULL, "AudioLevel", &ss, NULL, NULL, &error);
+        pa_ = pa_simple_new(NULL, "trad-desktop", PA_STREAM_RECORD, NULL, "AudioLevel", &ss, NULL, &bufAttr, &error);
     }
-    
+
     if (!pa_) {
         std::cerr << "pa_simple_new() failed: " << pa_strerror(error) << "\n";
         return;
     }
-    
-    std::vector<float> pcm(fftSize_);
-    
+
+    std::vector<float> pcmWindow(fftSize_, 0.0f);
+    std::vector<float> hopBuf(hopSize, 0.0f);
+
     while (running_) {
-        if (pa_simple_read(pa_, pcm.data(), pcm.size() * sizeof(float), &error) < 0) {
+        if (pa_simple_read(pa_, hopBuf.data(), hopBuf.size() * sizeof(float), &error) < 0) {
             std::cerr << "pa_simple_read() failed: " << pa_strerror(error) << "\n";
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
-        
-        computeFFT(pcm);
+
+        // Slide window left by hopSize and append new hopSize samples (50% overlap for 86 Hz smooth updates)
+        const int keep = fftSize_ - hopSize;
+        if (keep > 0) {
+            std::copy(pcmWindow.begin() + hopSize, pcmWindow.end(), pcmWindow.begin());
+        }
+        std::copy(hopBuf.begin(), hopBuf.end(), pcmWindow.begin() + std::max(0, keep));
+
+        computeFFT(pcmWindow);
     }
 }
 
@@ -195,56 +208,79 @@ void LinuxAudioLevel::computeFFT(const std::vector<float>& pcm) {
     fftInPlace(fftBuffer_);
 
     // 3. Process into bands using pre-computed logarithmic frequency bin boundaries
-    std::lock_guard<std::mutex> lock(dataMutex_);
-    targetRmsValue_ = currentRms;
     const double invHalfFft = 2.0 / static_cast<double>(fftSize_);
     const double invDbSpan = 1.0 / (ceilingDb - floorDb);
     const double sensScale = sensitivity_ / 35.0;
+    std::vector<double> rawBands(bands_, 0.0);
 
     for (int b = 0; b < bands_; ++b) {
         double bandSum = 0.0;
+        double bandPeak = 0.0;
         const int startBin = bandBoundaries_[b];
         const int endBin = bandBoundaries_[b + 1];
         const int count = endBin - startBin;
 
         for (int i = startBin; i < endBin; ++i) {
-            bandSum += std::abs(fftBuffer_[i]);
+            const double mag = std::abs(fftBuffer_[i]);
+            bandSum += mag;
+            if (mag > bandPeak) bandPeak = mag;
         }
 
-        double magnitude = (count > 0) ? (bandSum / count) * invHalfFft : 0.0;
+        // Blend average and peak energy per bin for responsive yet stable musical bars
+        double magnitude = (count > 0) ? ((0.65 * (bandSum / count) + 0.35 * bandPeak) * invHalfFft) : 0.0;
         double db = 20.0 * std::log10(magnitude + 1e-9);
         double normalized = std::clamp((db - floorDb) * invDbSpan, 0.0, 1.0);
-        normalized = std::pow(normalized, 1.65);
+        normalized = std::pow(normalized, 1.55);
 
         double freqWeight = 0.85 + (static_cast<double>(b) / std::max(1, bands_)) * 0.55;
         normalized *= freqWeight * sensScale;
-        targetBandValues_[b] = std::clamp(normalized, 0.0, 1.0);
+        rawBands[b] = std::clamp(normalized, 0.0, 1.0);
+    }
+
+    // 4. Spatial 3-tap smoothing across adjacent bands + temporal target pre-filter
+    std::lock_guard<std::mutex> lock(dataMutex_);
+    targetRmsValue_ = targetRmsValue_ * 0.25 + currentRms * 0.75;
+    for (int b = 0; b < bands_; ++b) {
+        const double prev = (b > 0) ? rawBands[b - 1] : rawBands[b];
+        const double curr = rawBands[b];
+        const double next = (b + 1 < bands_) ? rawBands[b + 1] : rawBands[b];
+        const double spatial = 0.16 * prev + 0.68 * curr + 0.16 * next;
+        if (spatial >= targetBandValues_[b]) {
+            targetBandValues_[b] = targetBandValues_[b] * 0.20 + spatial * 0.80;
+        } else {
+            targetBandValues_[b] = targetBandValues_[b] * 0.45 + spatial * 0.55;
+        }
     }
 }
 
 void LinuxAudioLevel::update(double dtMs) {
     if (isParent_) {
         std::lock_guard<std::mutex> lock(dataMutex_);
-        
-        // Exponential dt smoothing for RMS
+
+        // Frame-rate-independent exponential smoothing (never overshoots or snaps on 16-80ms frames)
+        const double clampedDt = std::clamp(dtMs, 1.0, 80.0);
+        const double attackTau = std::max(22.0, attack_ * 1.05);
+        const double decayTau  = std::max(75.0, decay_ * 0.90);
+        const double attackAlpha = 1.0 - std::exp(-clampedDt / attackTau);
+        const double decayAlpha  = 1.0 - std::exp(-clampedDt / decayTau);
+
         if (targetRmsValue_ > rmsValue_) {
-            rmsValue_ += (targetRmsValue_ - rmsValue_) * std::min(1.0, dtMs / std::max(1.0, attack_));
+            rmsValue_ += (targetRmsValue_ - rmsValue_) * attackAlpha;
         } else {
-            rmsValue_ -= (rmsValue_ - targetRmsValue_) * std::min(1.0, dtMs / std::max(1.0, decay_));
+            rmsValue_ += (targetRmsValue_ - rmsValue_) * decayAlpha;
         }
-        if (rmsValue_ < 0.001 && targetRmsValue_ == 0.0) {
+        if (rmsValue_ < 0.0005 && targetRmsValue_ == 0.0) {
             rmsValue_ = 0.0;
         }
         rmsValue_ = std::clamp(rmsValue_, 0.0, 1.0);
-        
-        // Exponential dt smoothing for Bands
-        for(int b = 0; b < bands_; b++) {
+
+        for (int b = 0; b < bands_; b++) {
             if (targetBandValues_[b] > bandValues_[b]) {
-                bandValues_[b] += (targetBandValues_[b] - bandValues_[b]) * std::min(1.0, dtMs / std::max(1.0, attack_));
+                bandValues_[b] += (targetBandValues_[b] - bandValues_[b]) * attackAlpha;
             } else {
-                bandValues_[b] -= (bandValues_[b] - targetBandValues_[b]) * std::min(1.0, dtMs / std::max(1.0, decay_));
+                bandValues_[b] += (targetBandValues_[b] - bandValues_[b]) * decayAlpha;
             }
-            if (bandValues_[b] < 0.001 && targetBandValues_[b] == 0.0) {
+            if (bandValues_[b] < 0.0005 && targetBandValues_[b] == 0.0) {
                 bandValues_[b] = 0.0;
             }
             bandValues_[b] = std::clamp(bandValues_[b], 0.0, 1.0);

@@ -218,8 +218,8 @@ void NowPlayingBackend::workerThread() {
             info.activePlayer = activePlayer;
             info.state = (bestState >= 0) ? bestState : 0;
 
-            // 3. Query Metadata
-            if (info.state != 0) {
+            // 3. Query Metadata (even when Paused or Stopped, and preserve last known cover art/title if still active)
+            if (true) {
                 GVariant* metaResult = g_dbus_connection_call_sync(
                     conn, activePlayer.c_str(), "/org/mpris/MediaPlayer2",
                     "org.freedesktop.DBus.Properties", "Get",
@@ -252,8 +252,30 @@ void NowPlayingBackend::workerThread() {
                                 info.album = g_variant_get_string(value, nullptr);
                             } else if (skey == "mpris:artUrl" && g_variant_is_of_type(value, G_VARIANT_TYPE_STRING)) {
                                 std::string artUrl = g_variant_get_string(value, nullptr);
+                                auto urlDecode = [](const std::string& str) {
+                                    std::string res;
+                                    res.reserve(str.size());
+                                    for (std::size_t i = 0; i < str.size(); ++i) {
+                                        if (str[i] == '%' && i + 2 < str.size()) {
+                                            int hex = 0;
+                                            if (std::sscanf(str.substr(i + 1, 2).c_str(), "%x", &hex) == 1) {
+                                                res += static_cast<char>(hex);
+                                                i += 2;
+                                                continue;
+                                            }
+                                        }
+                                        res += str[i];
+                                    }
+                                    return res;
+                                };
                                 if (artUrl.rfind("file://", 0) == 0) {
-                                    info.coverUrl = artUrl.substr(7);
+                                    std::string localArt = urlDecode(artUrl.substr(7));
+                                    info.coverUrl = "/tmp/rainmeter_cover.png";
+                                    if (!localArt.empty()) {
+                                        std::string cpCmd = "cp -f \"" + localArt + "\" /tmp/rainmeter_cover.png 2>/dev/null";
+                                        int r = system(cpCmd.c_str());
+                                        (void)r;
+                                    }
                                 } else if (!artUrl.empty()) {
                                     info.coverUrl = "/tmp/rainmeter_cover.png";
                                     if (artUrl != lastArtUrl && (artUrl.rfind("http://", 0) == 0 || artUrl.rfind("https://", 0) == 0)) {
@@ -275,6 +297,12 @@ void NowPlayingBackend::workerThread() {
                         g_variant_unref(inner);
                     }
                     g_variant_unref(metaResult);
+                }
+                if (info.coverUrl.empty() && std::getenv("HOME") != nullptr) {
+                    if (FILE* f = std::fopen("/tmp/rainmeter_cover.png", "rb")) {
+                        std::fclose(f);
+                        info.coverUrl = "/tmp/rainmeter_cover.png";
+                    }
                 }
                 
                 // Query Position

@@ -47,6 +47,48 @@ std::string MathParser::substitute(const std::string &input) const {
       }
     }
 
+    // Bare identifier (e.g. MeasureNetIn in "Formula=MeasureNetIn / 1024")
+    if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+      std::size_t j = i;
+      while (j < input.size() && (std::isalnum(static_cast<unsigned char>(input[j])) || input[j] == '_')) {
+        ++j;
+      }
+      const std::string ident = input.substr(i, j - i);
+      std::string lowerIdent = ident;
+      for (char &ch : lowerIdent) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+      }
+      // Leave built-in math function names untouched for evalArithmetic
+      std::size_t k = j;
+      while (k < input.size() && std::isspace(static_cast<unsigned char>(input[k]))) ++k;
+      bool isFuncCall = (k < input.size() && input[k] == '(') &&
+                        (lowerIdent == "rad" || lowerIdent == "deg" ||
+                         lowerIdent == "cos" || lowerIdent == "sin" ||
+                         lowerIdent == "abs" || lowerIdent == "round");
+      if (!isFuncCall) {
+        double value = 0.0;
+        if (measures_) {
+          value = measures_(ident);
+        }
+        if (value == 0.0 && variables_) {
+          std::string vstr = variables_(ident);
+          if (!vstr.empty()) {
+            char *ep = nullptr;
+            double parsed = std::strtod(vstr.c_str(), &ep);
+            if (ep != vstr.c_str()) value = parsed;
+          }
+        }
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%g", value);
+        out += buf;
+        i = j;
+        continue;
+      }
+      out += ident;
+      i = j;
+      continue;
+    }
+
     out += c;
     ++i;
   }
@@ -126,10 +168,12 @@ bool MathParser::evalArithmetic(const std::string &expr, double &out) {
       continue;
     }
 
-    if (std::isalpha(static_cast<unsigned char>(c))) {
+    if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
+      std::string rawIdent;
       std::string funcName;
-      while (i < expr.size() && std::isalpha(static_cast<unsigned char>(expr[i]))) {
-        funcName += std::tolower(expr[i]);
+      while (i < expr.size() && (std::isalnum(static_cast<unsigned char>(expr[i])) || expr[i] == '_')) {
+        rawIdent += expr[i];
+        funcName += static_cast<char>(std::tolower(static_cast<unsigned char>(expr[i])));
         ++i;
       }
       
@@ -159,6 +203,10 @@ bool MathParser::evalArithmetic(const std::string &expr, double &out) {
             values.push(std::cos(innerVal));
           } else if (funcName == "sin") {
             values.push(std::sin(innerVal));
+          } else if (funcName == "abs") {
+            values.push(std::abs(innerVal));
+          } else if (funcName == "round") {
+            values.push(std::round(innerVal));
           } else {
             return false; // unknown function
           }

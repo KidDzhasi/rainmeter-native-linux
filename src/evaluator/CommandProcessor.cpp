@@ -76,18 +76,51 @@ BangResult CommandProcessor::execute(const std::string &bangString,
 
 
 
-    // Handle non-bang system actions (like web URLs or shell commands)
+    // Handle non-bang system actions (like web URLs, file paths, or shell commands)
     if (payload[0] != '!') {
-      std::string cmdStr = payload;
-      if (cmdStr.size() >= 2 && cmdStr.front() == '"' && cmdStr.back() == '"') {
-        cmdStr = cmdStr.substr(1, cmdStr.size() - 2);
+      std::vector<std::string> sysTokens = tokenizeBang(payload);
+      if (sysTokens.empty()) {
+        continue;
       }
 
+      auto expandHome = [](std::string p) {
+        if (!p.empty() && p[0] == '~' && (p.size() == 1 || p[1] == '/')) {
+          const char *home = std::getenv("HOME");
+          if (home && home[0] != '\0') {
+            p = std::string(home) + p.substr(1);
+          }
+        } else if (p == ".") {
+          const char *home = std::getenv("HOME");
+          if (home && home[0] != '\0') {
+            p = std::string(home);
+          }
+        }
+        return p;
+      };
+
       std::string sysCmd;
-      if (cmdStr.find("http://") == 0 || cmdStr.find("https://") == 0) {
-        sysCmd = "xdg-open \"" + cmdStr + "\" &";
+      if (sysTokens.size() == 1) {
+        std::string target = expandHome(sysTokens[0]);
+        if (target.find("http://") == 0 || target.find("https://") == 0 ||
+            target.front() == '/' || std::filesystem::exists(target)) {
+          sysCmd = "xdg-open \"" + target + "\" >/dev/null 2>&1 &";
+        } else {
+          sysCmd = target + " >/dev/null 2>&1 &";
+        }
+      } else if (sysTokens[0] == "xdg-open" && sysTokens.size() >= 2) {
+        std::string target = expandHome(sysTokens[1]);
+        sysCmd = "xdg-open \"" + target + "\" >/dev/null 2>&1 &";
       } else {
-        sysCmd = cmdStr + " &";
+        for (std::size_t ti = 0; ti < sysTokens.size(); ++ti) {
+          if (ti > 0) sysCmd += " ";
+          std::string tok = expandHome(sysTokens[ti]);
+          if (tok.find(' ') != std::string::npos) {
+            sysCmd += "\"" + tok + "\"";
+          } else {
+            sysCmd += tok;
+          }
+        }
+        sysCmd += " >/dev/null 2>&1 &";
       }
 
       std::cout << "[SYSTEM] Executing OS Command: " << sysCmd << std::endl;
@@ -220,7 +253,10 @@ BangResult CommandProcessor::execute(const std::string &bangString,
              NowPlayingBackend::getInstance().sendCommand(measureCmd);
          }
       }
-    } else if (cmd == "!WEATHERPOPUP") {
+    } else if (cmd == "!WEATHERPOPUP" || cmd == "!OPENCONTROLCENTER" ||
+               cmd == "!CONTROLCENTER" || cmd == "!NOTESPOPUP" ||
+               cmd == "!EDITNOTE" || cmd == "!STICKYNOTES" ||
+               cmd == "!CALENDARPOPUP" || cmd == "!CALENDAR") {
       std::error_code ec;
       std::filesystem::path exePath = std::filesystem::read_symlink("/proc/self/exe", ec);
       std::filesystem::path guiPath = std::filesystem::current_path(ec) / "launcher_gui.py";
@@ -245,9 +281,28 @@ BangResult CommandProcessor::execute(const std::string &bangString,
               guiPath = "/opt/trad-rainmeter/launcher_gui.py";
           }
       }
-      std::string sysCmd = "python3 \"" + guiPath.string() + "\" --weather-popup >/dev/null 2>&1 &";
+      std::string flag = "";
+      if (cmd == "!WEATHERPOPUP") {
+          flag = " --weather-popup";
+      } else if (cmd == "!NOTESPOPUP" || cmd == "!EDITNOTE" || cmd == "!STICKYNOTES") {
+          flag = " --notes-popup";
+      } else if (cmd == "!CALENDARPOPUP" || cmd == "!CALENDAR") {
+          flag = " --calendar-popup";
+      }
+      std::string sysCmd = "python3 \"" + guiPath.string() + "\"" + flag + " >/dev/null 2>&1 &";
       int ret = std::system(sysCmd.c_str());
       (void)ret;
+    } else if (cmd == "!REFRESH" || cmd == "!REFRESHAPP") {
+      std::string notesInc = skin.expandBuiltins("#SKINSPATH#") + "../Notes.inc";
+      if (std::filesystem::exists(notesInc)) {
+          skin.parseFile(notesInc, false);
+      }
+      std::string weatherInc = skin.expandBuiltins("#SKINSPATH#") + "../Weather.inc";
+      if (std::filesystem::exists(weatherInc)) {
+          skin.parseFile(weatherInc, false);
+      }
+      result.needsUpdate = true;
+      result.needsRedraw = true;
     } else if (cmd == "!DEACTIVATECONFIG") {
       result.deactivateConfig = true;
     } else {

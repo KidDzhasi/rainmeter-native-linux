@@ -94,6 +94,7 @@ public:
 
 private:
   std::unordered_map<std::string, std::shared_ptr<IMeasure>> measures_;
+  std::vector<std::string> measureOrder_;
   PluginManager plugins_; // mocks Windows Measure=Plugin measures
   MathParser math_;       // For Measure=Calc
   

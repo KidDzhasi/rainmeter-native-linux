@@ -791,6 +791,13 @@ bool LayerShellWindow::initX11Surface(int width, int height, int windowX,
     return false;
   }
 
+  // Bind context once to set non-blocking swap interval (0) so eglSwapBuffers
+  // never stalls the engine loop when an app/window is open on another monitor
+  // or when two monitors have different refresh timings under Mutter/XWayland.
+  if (eglMakeCurrent(eglDisplay_, eglSurface_, eglSurface_, eglContext_) == EGL_TRUE) {
+    eglSwapInterval(eglDisplay_, 0);
+  }
+
   configured_ = true;
   return true;
 }
@@ -836,6 +843,10 @@ bool LayerShellWindow::initEGL() {
 
   eglSurface_ = eglCreateWindowSurface(eglDisplay_, config, (EGLNativeWindowType)eglWindow_, nullptr);
   if (eglSurface_ == EGL_NO_SURFACE) return false;
+
+  if (eglMakeCurrent(eglDisplay_, eglSurface_, eglSurface_, eglContext_) == EGL_TRUE) {
+    eglSwapInterval(eglDisplay_, 0);
+  }
 
   return true;
 }
@@ -907,6 +918,7 @@ bool LayerShellWindow::makeCurrent() {
 
 void LayerShellWindow::swapBuffers() {
     if (eglDisplay_ != EGL_NO_DISPLAY && eglSurface_ != EGL_NO_SURFACE) {
+        eglSwapInterval(eglDisplay_, 0);
         eglSwapBuffers(eglDisplay_, eglSurface_);
     }
 }
